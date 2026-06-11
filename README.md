@@ -97,14 +97,3 @@ powershell -ExecutionPolicy Bypass -File .\installer\build_installer.ps1
 ```
 
 El resultado queda en `dist/Facturacion-Setup.exe`. La carpeta `dist/` no se versiona.
-
-## Privacidad
-
-El repositorio no incluye datos reales ni debe contener:
-
-- Bases de datos `.db`.
-- Facturas generadas.
-- Backups.
-- Instaladores compilados.
-- Excels o exports reales.
-- Perfiles JSON con datos privados.
