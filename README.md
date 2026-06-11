@@ -1,6 +1,28 @@
-# Facturacion
+# Facturacion Automatica
 
-Aplicacion local para gestionar clientes, emitir facturas y generar documentos Word mensuales. Funciona como una app web local: se abre en el navegador, pero los datos se guardan en el propio equipo mediante SQLite.
+Aplicacion local para gestionar clientes, emitir facturas y generar documentos Word mensuales. La hice como un proyecto pequeño de automatizacion para simplificar una facturacion sencilla: datos de cliente, numeracion anual, calculo de IVA, generacion de documentos y copias de seguridad locales.
+
+Funciona como una app web local: se abre en el navegador, pero los datos se guardan en el propio equipo mediante SQLite.
+
+## Funcionalidades
+
+- Gestion de clientes.
+- Creacion de facturas con subtotal, IVA y total calculados.
+- Numeracion anual automatica.
+- Formas de pago: efectivo, transferencia y Bizum.
+- Generacion de factura individual en Word.
+- Word mensual consolidado.
+- Dashboard con ingresos y facturas por mes.
+- Cliente con mayor facturacion.
+- Papelera para clientes y facturas.
+- Exportacion CSV de clientes y facturas.
+- Importacion CSV de clientes.
+- Importacion de configuracion desde JSON.
+- Copias de seguridad automaticas al arrancar.
+
+## Tecnologias
+
+<img src="https://skillicons.dev/icons?i=py,html,css,js,sqlite&perline=5" alt="Stack">
 
 ## Requisitos
 
@@ -76,19 +98,6 @@ powershell -ExecutionPolicy Bypass -File .\installer\build_installer.ps1
 
 El resultado queda en `dist/Facturacion-Setup.exe`. La carpeta `dist/` no se versiona.
 
-## Funciones principales
-
-- Gestion de clientes.
-- Emision de facturas con numeracion anual.
-- Formas de pago: efectivo, transferencia y Bizum.
-- Generacion de Word individual por factura.
-- Word mensual consolidado.
-- Dashboard con ingresos y facturas por mes.
-- Papelera para clientes y facturas.
-- Exportacion CSV de clientes y facturas.
-- Importacion CSV de clientes.
-- Copias de seguridad automaticas al arrancar.
-
 ## Seguridad de datos
 
 El repositorio no debe contener:
@@ -99,3 +108,7 @@ El repositorio no debe contener:
 - Instaladores compilados.
 - Excels o exports reales.
 - Perfiles JSON con datos privados.
+
+## Nota
+
+Proyecto personal para practicar automatizacion, generacion de documentos y organizacion de datos en una aplicacion local sencilla.
