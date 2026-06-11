@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Runtime data
+data/*
+!data/.gitkeep
+generated/*
+!generated/.gitkeep
+facturas/*
+!facturas/.gitkeep
+backups/*
+!backups/.gitkeep
+
+# Build artifacts
+dist/
+installer/build/
+*.exe
+*.cab
+*.ddf
+*.rpt
+*.inf
+
+# Local/private exports
+outputs/
+tmp/
+*.xlsx
+*.xls
+*.csv
+*.json
+
+# Local tooling
+node_modules/
+.env
+.env.*

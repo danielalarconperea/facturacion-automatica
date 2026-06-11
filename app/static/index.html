@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Facturación</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260611-3">
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <h1>Facturación</h1>
+        <p>Clientes, facturas y documentos Word desde una sola pantalla.</p>
+      </div>
+      <nav class="tabs" aria-label="Secciones">
+        <button class="tab active" data-tab="dashboard">Dashboard</button>
+        <button class="tab" data-tab="clients">Clientes</button>
+        <button class="tab" data-tab="invoices">Facturas</button>
+        <button class="tab" data-tab="settings">Ajustes</button>
+        <button class="pending-button hidden" id="updatePendingButton" type="button">Actualizar cambios</button>
+        <button class="folder-tab" id="openFacturasFolder" type="button" title="Abrir carpeta de facturas" aria-label="Abrir carpeta de facturas">
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M3 6.8A2.8 2.8 0 0 1 5.8 4h4.1l2 2.2h6.3A2.8 2.8 0 0 1 21 9v8.2a2.8 2.8 0 0 1-2.8 2.8H5.8A2.8 2.8 0 0 1 3 17.2Z"/>
+            <path d="M3.4 9.2h17.2"/>
+          </svg>
+        </button>
+      </nav>
+    </header>
+
+    <main>
+      <section id="dashboard" class="view active">
+        <div class="section-title">
+          <h2>Dashboard</h2>
+          <select id="dashboardYear"></select>
+        </div>
+        <div class="metrics-grid">
+          <div class="metric"><span>Este mes</span><strong id="metricMonthRevenue">0 €</strong></div>
+          <div class="metric"><span>Este año</span><strong id="metricYearRevenue">0 €</strong></div>
+          <div class="metric"><span>Facturas mes</span><strong id="metricMonthInvoices">0</strong></div>
+          <div class="metric"><span>Ticket medio</span><strong id="metricAverageInvoice">0 €</strong></div>
+        </div>
+        <div class="dashboard-grid">
+          <div class="panel chart-panel trend-panel">
+            <h3>Ingresos y facturas por mes</h3>
+            <canvas id="monthlyTrendChart" height="260"></canvas>
+          </div>
+          <div class="panel top-client-panel">
+            <h3>Cliente con más facturación</h3>
+            <div class="top-client">
+              <strong id="topClientName">Sin datos</strong>
+              <span id="topClientRevenue">0 €</span>
+              <small id="topClientInvoices">0 facturas</small>
+            </div>
+          </div>
+          <div class="panel table-panel monthly-panel">
+            <table>
+              <thead>
+                <tr>
+                  <th>Mes</th>
+                  <th>Facturas</th>
+                  <th>Total</th>
+                  <th>Word</th>
+                </tr>
+              </thead>
+              <tbody id="monthlyExportsTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="clients" class="view">
+        <div class="section-title">
+          <h2>Clientes</h2>
+          <input id="clientSearch" type="search" placeholder="Buscar cliente">
+        </div>
+        <div class="two-column">
+          <form id="clientForm" class="panel">
+            <input type="hidden" id="clientId">
+            <h3 id="clientFormTitle">Nuevo cliente</h3>
+            <label>Nombre completo
+              <input id="clientName" required autocomplete="name">
+            </label>
+            <label>DNI/NIF
+              <input id="clientTaxId">
+            </label>
+            <label>Direccion
+              <input id="clientAddress">
+            </label>
+            <div class="inline-fields">
+              <label>Codigo postal
+                <input id="clientPostalCode" inputmode="numeric">
+              </label>
+              <label>Ciudad
+                <input id="clientCity">
+              </label>
+            </div>
+            <div class="inline-fields">
+              <label>Email
+                <input id="clientEmail" type="email">
+              </label>
+              <label>Telefono
+                <input id="clientPhone">
+              </label>
+            </div>
+            <label>Notas
+              <textarea id="clientNotes" rows="3"></textarea>
+            </label>
+            <div class="actions">
+              <button type="submit">Guardar cliente</button>
+              <button type="button" class="ghost" id="clearClient">Limpiar</button>
+            </div>
+          </form>
+
+          <div class="panel table-panel">
+            <table>
+              <thead>
+                <tr>
+                  <th>Cliente</th>
+                  <th>DNI/NIF</th>
+                  <th>Contacto</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="clientsTable"></tbody>
+            </table>
+          </div>
+        </div>
+        <div id="clientProfile" class="panel client-profile hidden"></div>
+      </section>
+
+      <section id="invoices" class="view">
+        <div class="section-title">
+          <h2>Facturas</h2>
+          <span id="invoiceHint" class="muted"></span>
+        </div>
+        <div class="two-column">
+          <form id="invoiceForm" class="panel">
+            <h3>Nueva factura</h3>
+            <label>Cliente
+              <select id="invoiceClient" required></select>
+            </label>
+            <div id="invoiceWarnings" class="soft-warning hidden"></div>
+            <div class="inline-fields">
+              <label>Fecha
+                <input id="invoiceDate" type="date" required>
+              </label>
+              <label>Forma de pago
+                <select id="paymentMethod">
+                  <option value="Efectivo">Efectivo</option>
+                  <option value="Transferencia">Transferencia</option>
+                  <option value="Bizum">Bizum</option>
+                </select>
+              </label>
+            </div>
+            <label>Concepto
+              <input id="invoiceConcept" list="conceptFavoritesList" required>
+              <datalist id="conceptFavoritesList"></datalist>
+            </label>
+            <div class="inline-fields thirds">
+              <label>Cantidad
+                <input id="quantity" type="number" min="1" step="1" value="1">
+              </label>
+              <label>Precio base
+                <input id="unitPrice" inputmode="decimal" placeholder="45,45">
+              </label>
+              <label>IVA %
+                <input id="vatRate" inputmode="decimal">
+              </label>
+            </div>
+            <div class="totals">
+              <label>Base
+                <input id="subtotalAmount" inputmode="decimal">
+              </label>
+              <label>IVA
+                <input id="vatAmount" inputmode="decimal">
+              </label>
+              <label>Total
+                <input id="totalAmount" inputmode="decimal">
+              </label>
+            </div>
+            <div class="actions">
+              <button type="submit">Generar Word</button>
+            </div>
+          </form>
+
+          <div class="panel table-panel">
+            <div class="filter-bar">
+              <input id="invoiceSearch" type="search" placeholder="Buscar nº, cliente o concepto">
+              <input id="invoiceDateFrom" type="date" aria-label="Fecha desde">
+              <input id="invoiceDateTo" type="date" aria-label="Fecha hasta">
+              <input id="invoiceMinTotal" inputmode="decimal" placeholder="Total mín.">
+              <input id="invoiceMaxTotal" inputmode="decimal" placeholder="Total máx.">
+              <button type="button" class="ghost" id="clearInvoiceFilters">Limpiar</button>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>Nº</th>
+                  <th>Cliente</th>
+                  <th>Fecha</th>
+                  <th>Total</th>
+                  <th>Documento</th>
+                </tr>
+              </thead>
+              <tbody id="invoicesTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="settings" class="view">
+        <div class="section-title">
+          <h2>Ajustes</h2>
+        </div>
+        <form id="settingsForm" class="panel settings-grid">
+          <label>Nombre emisor
+            <input id="issuerName">
+          </label>
+          <label>DNI/NIF emisor
+            <input id="issuerTaxId">
+          </label>
+          <label>Direccion emisor
+            <input id="issuerAddress">
+          </label>
+          <label>CP y ciudad emisor
+            <input id="issuerPostalCity">
+          </label>
+          <label>Siguiente numero del año actual
+            <input id="invoiceNextNumber" type="number" min="1">
+          </label>
+          <label>Serie anual automatica
+            <input id="invoiceSeries" placeholder="Ej. 2026-">
+          </label>
+          <label>Concepto por defecto
+            <input id="defaultConcept">
+          </label>
+          <label>Precio base por defecto
+            <input id="defaultUnitPrice" inputmode="decimal" placeholder="45,45">
+          </label>
+          <label>IVA por defecto
+            <input id="defaultVatRate" inputmode="decimal">
+          </label>
+          <div class="actions full-row">
+            <button type="submit">Guardar ajustes</button>
+          </div>
+        </form>
+        <div class="settings-panels">
+          <section class="panel">
+            <h3>Mantenimiento</h3>
+            <div class="actions wrap">
+              <button type="button" id="forceUpdateDocuments">Actualizar cambios</button>
+              <a class="link-button" href="/api/export/clients.csv">Exportar clientes CSV</a>
+              <a class="link-button" href="/api/export/invoices.csv">Exportar facturas CSV</a>
+            </div>
+            <div id="documentTasksList" class="compact-list"></div>
+          </section>
+          <section class="panel">
+            <h3>Importar clientes</h3>
+            <textarea id="importClientsCsv" rows="5" placeholder="Pega CSV con columnas: full_name;tax_id;address;postal_code;city;email;phone;notes"></textarea>
+            <div class="actions">
+              <button type="button" id="importClientsButton">Importar clientes</button>
+            </div>
+          </section>
+          <section class="panel">
+            <h3>Importar configuracion</h3>
+            <input id="importSettingsFile" type="file" accept="application/json,.json">
+            <div class="actions">
+              <button type="button" id="importSettingsButton">Importar configuracion</button>
+            </div>
+          </section>
+          <section class="panel">
+            <h3>Papelera</h3>
+            <div id="trashList" class="compact-list"></div>
+          </section>
+          <section class="panel">
+            <h3>Actividad y errores</h3>
+            <div id="eventsList" class="compact-list"></div>
+          </section>
+          <section class="panel">
+            <h3>Copias de seguridad</h3>
+            <div id="backupsList" class="compact-list"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <div id="invoicePreviewModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="previewTitle">
+      <div class="modal-panel">
+        <div class="modal-header">
+          <h2 id="previewTitle">Vista previa</h2>
+          <button type="button" class="ghost" id="closePreview">Cerrar</button>
+        </div>
+        <div id="invoicePreviewBody" class="invoice-preview"></div>
+      </div>
+    </div>
+
+    <div id="toast" role="status" aria-live="polite"></div>
+    <script src="/static/app.js?v=20260611-4"></script>
+  </body>
+</html>
