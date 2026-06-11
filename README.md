@@ -4,6 +4,8 @@ Aplicacion local para gestionar clientes, emitir facturas y generar documentos W
 
 Funciona como una app web local: se abre en el navegador, pero los datos se guardan en el propio equipo mediante SQLite.
 
+> Proyecto personal creado para ayudar a una profesional autonoma a simplificar la emision de facturas, la generacion de documentos y la organizacion de datos desde una aplicacion local sencilla.
+
 ## Funcionalidades
 
 - Gestion de clientes.
@@ -86,8 +88,6 @@ Ejemplo de estructura:
 }
 ```
 
-No subas a GitHub perfiles JSON con datos reales de clientes o emisores.
-
 ## Instalador
 
 El instalador se genera con:
@@ -98,9 +98,9 @@ powershell -ExecutionPolicy Bypass -File .\installer\build_installer.ps1
 
 El resultado queda en `dist/Facturacion-Setup.exe`. La carpeta `dist/` no se versiona.
 
-## Seguridad de datos
+## Privacidad
 
-El repositorio no debe contener:
+El repositorio no incluye datos reales ni debe contener:
 
 - Bases de datos `.db`.
 - Facturas generadas.
@@ -108,7 +108,3 @@ El repositorio no debe contener:
 - Instaladores compilados.
 - Excels o exports reales.
 - Perfiles JSON con datos privados.
-
-## Nota
-
-Proyecto personal para practicar automatizacion, generacion de documentos y organizacion de datos en una aplicacion local sencilla.
