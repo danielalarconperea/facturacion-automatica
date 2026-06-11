@@ -304,13 +304,18 @@ function renderDashboard() {
 
   const revenueByMonth = Array(12).fill(0);
   const countByMonth = Array(12).fill(0);
+  const sessionsByMonth = Array(12).fill(0);
   yearInvoices.forEach((invoice) => {
     const index = invoiceMonth(invoice) - 1;
     if (index >= 0 && index < 12) {
       revenueByMonth[index] += Number(invoice.total || 0);
       countByMonth[index] += 1;
+      sessionsByMonth[index] += Number(invoice.quantity || 0);
     }
   });
+  const averagePriceByMonth = revenueByMonth.map((total, index) =>
+    sessionsByMonth[index] ? total / sessionsByMonth[index] : 0
+  );
 
   const revenueByClient = {};
   yearInvoices.forEach((invoice) => {
@@ -321,7 +326,7 @@ function renderDashboard() {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 6);
 
-  drawCombinedTrendChart("monthlyTrendChart", monthNames.map((name) => name.slice(0, 3)), revenueByMonth, countByMonth);
+  drawSessionsPriceChart("monthlyTrendChart", monthNames.map((name) => name.slice(0, 3)), sessionsByMonth, averagePriceByMonth);
   renderTopClient(topClients, yearInvoices);
   renderMonthlyExports(year, revenueByMonth, countByMonth);
 }
@@ -334,7 +339,7 @@ function renderTopClient(topClients, invoices) {
   $("topClientInvoices").textContent = `${invoiceCount} factura${invoiceCount === 1 ? "" : "s"}`;
 }
 
-function drawCombinedTrendChart(canvasId, labels, revenueValues, countValues) {
+function drawSessionsPriceChart(canvasId, labels, sessionValues, averagePriceValues) {
   const canvas = $(canvasId);
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
@@ -354,13 +359,14 @@ function drawCombinedTrendChart(canvasId, labels, revenueValues, countValues) {
   const padding = { top: 34, right: compact ? 36 : 52, bottom: 40, left: compact ? 46 : 62 };
   const chartWidth = Math.max(1, width - padding.left - padding.right);
   const chartHeight = height - padding.top - padding.bottom;
-  const maxRevenue = Math.max(...revenueValues, 0);
-  const maxCount = Math.max(...countValues, 0);
-  const revenueScale = niceScale(maxRevenue);
-  const countScale = Math.max(1, maxCount);
-  const xFor = (index) => padding.left + (chartWidth * index) / Math.max(labels.length - 1, 1);
-  const yRevenue = (value) => padding.top + chartHeight - (value / revenueScale) * chartHeight;
-  const yCount = (value) => padding.top + chartHeight - (value / countScale) * chartHeight;
+  const maxSessions = Math.max(...sessionValues, 0);
+  const maxAveragePrice = Math.max(...averagePriceValues, 0);
+  const sessionScale = niceScale(maxSessions);
+  const priceScale = niceScale(maxAveragePrice);
+  const slotWidth = chartWidth / Math.max(labels.length, 1);
+  const xFor = (index) => padding.left + slotWidth * (index + 0.5);
+  const ySessions = (value) => padding.top + chartHeight - (value / sessionScale) * chartHeight;
+  const yAveragePrice = (value) => padding.top + chartHeight - (value / priceScale) * chartHeight;
 
   ctx.strokeStyle = "#ebe5dc";
   ctx.lineWidth = 1;
@@ -379,29 +385,50 @@ function drawCombinedTrendChart(canvasId, labels, revenueValues, countValues) {
   ctx.lineTo(padding.left + chartWidth, padding.top + chartHeight);
   ctx.stroke();
 
-  function drawLine(values, yFor, color) {
+  const barWidth = Math.max(10, Math.min(34, slotWidth * 0.54));
+  const baseline = padding.top + chartHeight;
+  ctx.fillStyle = "rgba(17, 100, 102, 0.22)";
+  ctx.strokeStyle = "#116466";
+  ctx.lineWidth = 1;
+  sessionValues.forEach((value, index) => {
+    const x = xFor(index) - barWidth / 2;
+    const y = ySessions(value);
+    const heightValue = baseline - y;
+    ctx.fillRect(x, y, barWidth, heightValue);
+    ctx.strokeRect(x, y, barWidth, heightValue);
+  });
+
+  function drawSparseLine(values, yFor, color) {
     ctx.strokeStyle = color;
     ctx.lineWidth = 2.4;
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
+    let drawing = false;
+    let hasPoints = false;
     ctx.beginPath();
     values.forEach((value, index) => {
+      if (!sessionValues[index]) {
+        drawing = false;
+        return;
+      }
       const x = xFor(index);
       const y = yFor(value);
-      if (index === 0) ctx.moveTo(x, y);
+      if (!drawing) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
+      drawing = true;
+      hasPoints = true;
     });
-    ctx.stroke();
+    if (hasPoints) ctx.stroke();
     ctx.fillStyle = color;
     values.forEach((value, index) => {
+      if (!sessionValues[index]) return;
       ctx.beginPath();
-      ctx.arc(xFor(index), yFor(value), 3.5, 0, Math.PI * 2);
+      ctx.arc(xFor(index), yFor(value), 4, 0, Math.PI * 2);
       ctx.fill();
     });
   }
 
-  drawLine(revenueValues, yRevenue, "#116466");
-  drawLine(countValues, yCount, "#c79a35");
+  drawSparseLine(averagePriceValues, yAveragePrice, "#c79a35");
 
   ctx.font = "12px Segoe UI, Arial";
   ctx.fillStyle = "#687175";
@@ -413,13 +440,13 @@ function drawCombinedTrendChart(canvasId, labels, revenueValues, countValues) {
   ctx.font = "12px Segoe UI, Arial";
   ctx.textAlign = "left";
   ctx.fillStyle = "#116466";
-  ctx.fillText(maxRevenue ? euro(revenueScale) : euro(0), 4, padding.top + 8);
-  drawLegendItem(ctx, padding.left, 15, "#116466", "Ingresos");
+  ctx.fillText(maxSessions ? String(Math.round(sessionScale)) : "0", 4, padding.top + 8);
+  drawLegendItem(ctx, padding.left, 15, "#116466", "Sesiones");
 
   ctx.textAlign = "right";
   ctx.fillStyle = "#c79a35";
-  ctx.fillText(maxCount ? String(Math.round(countScale)) : "0", width - 4, padding.top + 8);
-  drawLegendItem(ctx, compact ? padding.left + 105 : padding.left + 135, 15, "#c79a35", "Facturas");
+  ctx.fillText(maxAveragePrice ? euro(priceScale) : euro(0), width - 4, padding.top + 8);
+  drawLegendItem(ctx, compact ? padding.left + 105 : padding.left + 135, 15, "#c79a35", "Precio medio");
 }
 
 function niceScale(value) {
