@@ -240,6 +240,16 @@
           <label>IVA por defecto
             <input id="defaultVatRate" inputmode="decimal">
           </label>
+          <label>Calculo del IVA
+            <select id="vatCalculationMode">
+              <option value="unit_ceil">Por unidad, redondeo al alza</option>
+              <option value="line_standard">Sobre base total, redondeo normal</option>
+              <option value="unit_standard">Por unidad, redondeo normal</option>
+              <option value="line_ceil">Sobre base total, redondeo al alza</option>
+              <option value="vat_included">Precio con IVA incluido</option>
+              <option value="exempt">Sin IVA / exento</option>
+            </select>
+          </label>
           <div class="actions full-row">
             <button type="submit">Guardar ajustes</button>
           </div>
@@ -295,6 +305,6 @@
     </div>
 
     <div id="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=20260611-4"></script>
+    <script src="/static/app.js?v=20260611-5"></script>
   </body>
 </html>

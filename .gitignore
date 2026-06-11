@@ -26,6 +26,7 @@ installer/build/
 # Local/private exports
 outputs/
 tmp/
+INVESTIGACION_*.md
 *.xlsx
 *.xls
 *.csv

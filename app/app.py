@@ -46,9 +46,11 @@ DEFAULT_SETTINGS = {
     "default_concept": "1 SERVICIO",
     "default_unit_price": "0",
     "default_vat_rate": "21",
+    "vat_calculation_mode": "unit_ceil",
 }
 
 PAYMENT_METHODS = {"Efectivo", "Transferencia", "Bizum"}
+VAT_CALCULATION_MODES = {"unit_ceil", "line_standard", "unit_standard", "line_ceil", "vat_included", "exempt"}
 
 MONTH_NAMES = {
     1: "ENERO",
@@ -74,6 +76,41 @@ def money(value: Decimal | str | float | int, field_name: str = "importe") -> De
 
 def money_up(value: Decimal | str | float | int, field_name: str = "importe") -> Decimal:
     return parse_decimal(value, field_name).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+
+
+def calculate_invoice_totals(
+    quantity: Decimal,
+    unit_price: Decimal,
+    vat_rate: Decimal,
+    mode: str,
+) -> tuple[Decimal, Decimal, Decimal]:
+    if mode not in VAT_CALCULATION_MODES:
+        mode = DEFAULT_SETTINGS["vat_calculation_mode"]
+
+    if mode == "exempt":
+        subtotal = money(quantity * unit_price, "base calculada")
+        return subtotal, Decimal("0.00"), subtotal
+
+    if mode == "vat_included":
+        total = money(quantity * unit_price, "total calculado")
+        divisor = Decimal("1") + (vat_rate / Decimal("100"))
+        subtotal = money(total / divisor if divisor else total, "base calculada")
+        vat_amount = money(total - subtotal, "IVA calculado")
+        return subtotal, vat_amount, total
+
+    subtotal = money(quantity * unit_price, "base calculada")
+    if mode == "unit_ceil":
+        unit_vat_amount = money_up(unit_price * vat_rate / Decimal("100"), "IVA por unidad")
+        vat_amount = money(quantity * unit_vat_amount, "IVA calculado")
+    elif mode == "unit_standard":
+        unit_vat_amount = money(unit_price * vat_rate / Decimal("100"), "IVA por unidad")
+        vat_amount = money(quantity * unit_vat_amount, "IVA calculado")
+    elif mode == "line_ceil":
+        vat_amount = money_up(subtotal * vat_rate / Decimal("100"), "IVA calculado")
+    else:
+        vat_amount = money(subtotal * vat_rate / Decimal("100"), "IVA calculado")
+    total = money(subtotal + vat_amount, "total calculado")
+    return subtotal, vat_amount, total
 
 
 def parse_decimal(value: Decimal | str | float | int, field_name: str = "importe") -> Decimal:
@@ -328,6 +365,8 @@ def save_settings(conn: sqlite3.Connection, settings: dict) -> dict[str, str]:
     allowed = set(DEFAULT_SETTINGS)
     for key, value in settings.items():
         if key in allowed:
+            if key == "vat_calculation_mode" and value not in VAT_CALCULATION_MODES:
+                raise ValueError("El modo de IVA no es valido.")
             conn.execute(
                 "INSERT INTO settings(key, value) VALUES(?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -1104,6 +1143,12 @@ class Handler(BaseHTTPRequestHandler):
         unit_vat_amount = money_up(unit_price * vat_rate / Decimal("100"), "IVA por sesión")
         calculated_vat_amount = money(quantity * unit_vat_amount, "IVA calculado")
         calculated_total = money(calculated_subtotal + calculated_vat_amount, "total calculado")
+        calculated_subtotal, calculated_vat_amount, calculated_total = calculate_invoice_totals(
+            quantity,
+            unit_price,
+            vat_rate,
+            payload.get("vat_calculation_mode") or DEFAULT_SETTINGS["vat_calculation_mode"],
+        )
         subtotal = money(payload.get("subtotal") or calculated_subtotal, "base")
         vat_amount = money(payload.get("vat_amount") or calculated_vat_amount, "IVA")
         total = money(payload.get("total") or calculated_total, "total")

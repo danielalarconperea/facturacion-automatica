@@ -93,6 +93,37 @@ function roundCentsUp(value) {
   return Math.ceil((value - Number.EPSILON) * 100) / 100;
 }
 
+function vatCalculationMode() {
+  return state.settings.vat_calculation_mode || "unit_ceil";
+}
+
+function calculateInvoiceTotals(quantity, unitPrice, vatRate, mode) {
+  if (mode === "exempt") {
+    const subtotal = roundCents(quantity * unitPrice);
+    return { subtotal, vat: 0, total: subtotal };
+  }
+
+  if (mode === "vat_included") {
+    const total = roundCents(quantity * unitPrice);
+    const divisor = 1 + vatRate / 100;
+    const subtotal = roundCents(divisor ? total / divisor : total);
+    return { subtotal, vat: roundCents(total - subtotal), total };
+  }
+
+  const subtotal = roundCents(quantity * unitPrice);
+  let vat = 0;
+  if (mode === "unit_standard") {
+    vat = roundCents(quantity * roundCents(unitPrice * vatRate / 100));
+  } else if (mode === "line_ceil") {
+    vat = roundCentsUp(subtotal * vatRate / 100);
+  } else if (mode === "line_standard") {
+    vat = roundCents(subtotal * vatRate / 100);
+  } else {
+    vat = roundCents(quantity * roundCentsUp(unitPrice * vatRate / 100));
+  }
+  return { subtotal, vat, total: roundCents(subtotal + vat) };
+}
+
 function today() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -307,24 +338,41 @@ function drawCombinedTrendChart(canvasId, labels, revenueValues, countValues) {
   const canvas = $(canvasId);
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
-  const width = canvas.clientWidth || 480;
+  if (!ctx) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.max(320, Math.floor(rect.width || canvas.parentElement?.clientWidth || 480));
   const height = Number(canvas.getAttribute("height")) || 260;
-  canvas.width = width * window.devicePixelRatio;
-  canvas.height = height * window.devicePixelRatio;
-  ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+  const ratio = Math.max(1, window.devicePixelRatio || 1);
+  canvas.width = Math.round(width * ratio);
+  canvas.height = Math.round(height * ratio);
+  canvas.style.height = `${height}px`;
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   ctx.clearRect(0, 0, width, height);
 
-  const padding = { top: 26, right: 42, bottom: 38, left: 56 };
-  const chartWidth = width - padding.left - padding.right;
+  const compact = width < 420;
+  const padding = { top: 34, right: compact ? 36 : 52, bottom: 40, left: compact ? 46 : 62 };
+  const chartWidth = Math.max(1, width - padding.left - padding.right);
   const chartHeight = height - padding.top - padding.bottom;
-  const maxRevenue = Math.max(...revenueValues, 1);
-  const maxCount = Math.max(...countValues, 1);
+  const maxRevenue = Math.max(...revenueValues, 0);
+  const maxCount = Math.max(...countValues, 0);
+  const revenueScale = niceScale(maxRevenue);
+  const countScale = Math.max(1, maxCount);
   const xFor = (index) => padding.left + (chartWidth * index) / Math.max(labels.length - 1, 1);
-  const yRevenue = (value) => padding.top + chartHeight - (value / maxRevenue) * chartHeight;
-  const yCount = (value) => padding.top + chartHeight - (value / maxCount) * chartHeight;
+  const yRevenue = (value) => padding.top + chartHeight - (value / revenueScale) * chartHeight;
+  const yCount = (value) => padding.top + chartHeight - (value / countScale) * chartHeight;
+
+  ctx.strokeStyle = "#ebe5dc";
+  ctx.lineWidth = 1;
+  for (let index = 0; index <= 4; index += 1) {
+    const y = padding.top + (chartHeight * index) / 4;
+    ctx.beginPath();
+    ctx.moveTo(padding.left, y);
+    ctx.lineTo(padding.left + chartWidth, y);
+    ctx.stroke();
+  }
 
   ctx.strokeStyle = "#d9d4ca";
-  ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(padding.left, padding.top);
   ctx.lineTo(padding.left, padding.top + chartHeight);
@@ -334,6 +382,8 @@ function drawCombinedTrendChart(canvasId, labels, revenueValues, countValues) {
   function drawLine(values, yFor, color) {
     ctx.strokeStyle = color;
     ctx.lineWidth = 2.4;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
     ctx.beginPath();
     values.forEach((value, index) => {
       const x = xFor(index);
@@ -353,22 +403,38 @@ function drawCombinedTrendChart(canvasId, labels, revenueValues, countValues) {
   drawLine(revenueValues, yRevenue, "#116466");
   drawLine(countValues, yCount, "#c79a35");
 
-  ctx.fillStyle = "#687175";
   ctx.font = "12px Segoe UI, Arial";
+  ctx.fillStyle = "#687175";
   ctx.textAlign = "center";
   labels.forEach((label, index) => {
     ctx.fillText(label, xFor(index), height - 12);
   });
 
+  ctx.font = "12px Segoe UI, Arial";
   ctx.textAlign = "left";
   ctx.fillStyle = "#116466";
-  ctx.fillText(euro(maxRevenue), 4, padding.top + 8);
-  ctx.fillText("Ingresos", padding.left, 15);
+  ctx.fillText(maxRevenue ? euro(revenueScale) : euro(0), 4, padding.top + 8);
+  drawLegendItem(ctx, padding.left, 15, "#116466", "Ingresos");
 
   ctx.textAlign = "right";
   ctx.fillStyle = "#c79a35";
-  ctx.fillText(String(Math.round(maxCount)), width - 4, padding.top + 8);
-  ctx.fillText("Facturas", padding.left + 155, 15);
+  ctx.fillText(maxCount ? String(Math.round(countScale)) : "0", width - 4, padding.top + 8);
+  drawLegendItem(ctx, compact ? padding.left + 105 : padding.left + 135, 15, "#c79a35", "Facturas");
+}
+
+function niceScale(value) {
+  if (!value) return 1;
+  const magnitude = 10 ** Math.floor(Math.log10(value));
+  return Math.ceil(value / magnitude) * magnitude;
+}
+
+function drawLegendItem(ctx, x, y, color, label) {
+  ctx.textAlign = "left";
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(x, y - 4, 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillText(label, x + 10, y);
 }
 
 function renderMonthlyExports(year, revenueByMonth, countByMonth) {
@@ -817,12 +883,13 @@ function fillSettings() {
   $("defaultConcept").value = state.settings.default_concept || "";
   $("defaultUnitPrice").value = state.settings.default_unit_price || "0";
   $("defaultVatRate").value = state.settings.default_vat_rate || "21";
+  $("vatCalculationMode").value = vatCalculationMode();
 
   $("invoiceDate").value = today();
   $("paymentMethod").value = "Efectivo";
   $("invoiceConcept").value = state.settings.default_concept || autoConceptForQuantity($("quantity").value);
   $("unitPrice").value = state.settings.default_unit_price || "0";
-  $("vatRate").value = state.settings.default_vat_rate || "21";
+  $("vatRate").value = vatCalculationMode() === "exempt" ? "0" : state.settings.default_vat_rate || "21";
   updateTotals();
 }
 
@@ -837,6 +904,7 @@ function settingsPayload() {
     default_concept: $("defaultConcept").value,
     default_unit_price: $("defaultUnitPrice").value,
     default_vat_rate: $("defaultVatRate").value,
+    vat_calculation_mode: $("vatCalculationMode").value,
   };
 }
 
@@ -850,6 +918,7 @@ function invoicePayload() {
     quantity: cleanAmountValue("quantity"),
     unit_price: cleanAmountValue("unitPrice"),
     vat_rate: cleanAmountValue("vatRate"),
+    vat_calculation_mode: vatCalculationMode(),
     subtotal: cleanAmountValue("subtotalAmount"),
     vat_amount: cleanAmountValue("vatAmount"),
     total: cleanAmountValue("totalAmount"),
@@ -861,12 +930,10 @@ function updateTotals() {
   const quantity = parseAmount($("quantity").value || 0);
   const unitPrice = parseAmount($("unitPrice").value || 0);
   const vatRate = parseAmount($("vatRate").value || 0);
-  const subtotal = roundCents(quantity * unitPrice);
-  const unitVat = roundCentsUp(unitPrice * vatRate / 100);
-  const vat = roundCents(quantity * unitVat);
+  const { subtotal, vat, total } = calculateInvoiceTotals(quantity, unitPrice, vatRate, vatCalculationMode());
   $("subtotalAmount").value = amountText(subtotal);
   $("vatAmount").value = amountText(vat);
-  $("totalAmount").value = amountText(roundCents(subtotal + vat));
+  $("totalAmount").value = amountText(total);
 }
 
 function updateTotalFromManualBaseAndVat() {
@@ -902,6 +969,14 @@ $("openFacturasFolder").addEventListener("click", async () => {
 });
 
 $("dashboardYear").addEventListener("change", renderDashboard);
+
+let dashboardResizeTimer;
+window.addEventListener("resize", () => {
+  if (!$("dashboard").classList.contains("active")) return;
+  window.clearTimeout(dashboardResizeTimer);
+  dashboardResizeTimer = window.setTimeout(renderDashboard, 120);
+});
+
 $("clientSearch").addEventListener("input", renderClients);
 $("clearClient").addEventListener("click", () => fillClientForm());
 $("clientPostalCode").addEventListener("blur", autocompleteCityFromPostalCode);
