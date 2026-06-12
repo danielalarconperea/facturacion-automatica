@@ -40,9 +40,12 @@ function amountText(value) {
   const number = Number(value || 0);
   const rounded = Math.round((number + Number.EPSILON) * 100) / 100;
   const hasCents = Math.abs(rounded - Math.round(rounded)) > 0.000001;
+  // Sin separador de miles: este texto se reenvía al backend y "10.000" se
+  // confundiría con 10,000 (diez con tres decimales).
   return rounded.toLocaleString("es-ES", {
     minimumFractionDigits: hasCents ? 2 : 0,
     maximumFractionDigits: 2,
+    useGrouping: false,
   });
 }
 
@@ -77,6 +80,20 @@ function parseAmount(value) {
   const text = String(value || "").trim().replaceAll(" ", "");
   if (text.includes(",") && text.includes(".")) {
     return Number(text.replaceAll(".", "").replace(",", ".")) || 0;
+  }
+  if (text.includes(".") && !text.includes(",")) {
+    // Sin coma, el punto es separador de miles en notación española
+    // ("1.000" = mil) cuando agrupa de 3 en 3 con parte entera no nula;
+    // si no ("45.45", "0.5", "1.5"), se trata como decimal.
+    const parts = text.replace(/^-/, "").split(".");
+    const isThousands =
+      parts.length > 1 &&
+      !/^0*$/.test(parts[0]) &&
+      parts[0].length <= 3 &&
+      parts.slice(1).every((group) => group.length === 3);
+    if (isThousands) {
+      return Number(text.replaceAll(".", "")) || 0;
+    }
   }
   return Number(text.replace(",", ".")) || 0;
 }
@@ -125,7 +142,12 @@ function calculateInvoiceTotals(quantity, unitPrice, vatRate, mode) {
 }
 
 function today() {
-  return new Date().toISOString().slice(0, 10);
+  // Fecha local: con toISOString() (UTC) el formulario proponía el día
+  // anterior entre las 00:00 y la 01:00/02:00 hora española.
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${now.getFullYear()}-${month}-${day}`;
 }
 
 function toast(message) {
@@ -229,17 +251,22 @@ function renderMaintenance() {
     type: "client",
     id: client.id,
     title: client.full_name,
+    purgeLabel: client.full_name,
     detail: `Cliente eliminado ${formatDateTime(client.deleted_at)}`,
   })), ...trashInvoices.map((invoice) => ({
     type: "invoice",
     id: invoice.id,
     title: `Factura ${invoice.invoice_number}`,
+    purgeLabel: invoice.invoice_number,
     detail: `${invoice.client_name || ""} · ${formatDateTime(invoice.deleted_at)}`,
   }))].map((item) => `
       <div class="list-item">
         <strong>${escapeHtml(item.title)}</strong>
         <span>${escapeHtml(item.detail)}</span>
-        <button type="button" class="edit-button" data-restore-${item.type}="${item.id}">${icon("restore")} Restaurar</button>
+        <span class="row-actions trash-actions">
+          <button type="button" class="edit-button" data-restore-${item.type}="${item.id}">${icon("restore")} Restaurar</button>
+          <button type="button" class="delete-button" data-purge-${item.type}="${item.id}" data-purge-label="${escapeHtml(item.purgeLabel)}">${icon("trash")} Borrar definitivo</button>
+        </span>
       </div>
     `).join("") || `<div class="list-item"><strong>Papelera vacía</strong><span>No hay elementos eliminados.</span></div>`;
 
@@ -248,6 +275,12 @@ function renderMaintenance() {
   });
   document.querySelectorAll("[data-restore-invoice]").forEach((button) => {
     button.addEventListener("click", () => restoreTrashItem("invoice", Number(button.dataset.restoreInvoice)));
+  });
+  document.querySelectorAll("[data-purge-client]").forEach((button) => {
+    button.addEventListener("click", () => purgeTrashItem("client", Number(button.dataset.purgeClient), button.dataset.purgeLabel));
+  });
+  document.querySelectorAll("[data-purge-invoice]").forEach((button) => {
+    button.addEventListener("click", () => purgeTrashItem("invoice", Number(button.dataset.purgeInvoice), button.dataset.purgeLabel));
   });
 
   $("eventsList").innerHTML = state.events.length
@@ -378,7 +411,7 @@ function drawSessionsPriceChart(canvasId, labels, sessionValues, averagePriceVal
     ctx.stroke();
   }
 
-  ctx.strokeStyle = "#d9d4ca";
+  ctx.strokeStyle = "#d8cbb8";
   ctx.beginPath();
   ctx.moveTo(padding.left, padding.top);
   ctx.lineTo(padding.left, padding.top + chartHeight);
@@ -387,8 +420,8 @@ function drawSessionsPriceChart(canvasId, labels, sessionValues, averagePriceVal
 
   const barWidth = Math.max(10, Math.min(34, slotWidth * 0.54));
   const baseline = padding.top + chartHeight;
-  ctx.fillStyle = "rgba(17, 100, 102, 0.22)";
-  ctx.strokeStyle = "#116466";
+  ctx.fillStyle = "rgba(79, 124, 104, 0.2)";
+  ctx.strokeStyle = "#4f7c68";
   ctx.lineWidth = 1;
   sessionValues.forEach((value, index) => {
     const x = xFor(index) - barWidth / 2;
@@ -428,25 +461,26 @@ function drawSessionsPriceChart(canvasId, labels, sessionValues, averagePriceVal
     });
   }
 
-  drawSparseLine(averagePriceValues, yAveragePrice, "#c79a35");
+  drawSparseLine(averagePriceValues, yAveragePrice, "#c9805a");
 
   ctx.font = "12px Segoe UI, Arial";
-  ctx.fillStyle = "#687175";
+  ctx.fillStyle = "#756f62";
   ctx.textAlign = "center";
   labels.forEach((label, index) => {
+    if (compact && index % 2 === 1) return;
     ctx.fillText(label, xFor(index), height - 12);
   });
 
   ctx.font = "12px Segoe UI, Arial";
   ctx.textAlign = "left";
-  ctx.fillStyle = "#116466";
+  ctx.fillStyle = "#4f7c68";
   ctx.fillText(maxSessions ? String(Math.round(sessionScale)) : "0", 4, padding.top + 8);
-  drawLegendItem(ctx, padding.left, 15, "#116466", "Sesiones");
+  drawLegendItem(ctx, padding.left, 15, "#4f7c68", "Sesiones");
 
   ctx.textAlign = "right";
-  ctx.fillStyle = "#c79a35";
+  ctx.fillStyle = "#c9805a";
   ctx.fillText(maxAveragePrice ? euro(priceScale) : euro(0), width - 4, padding.top + 8);
-  drawLegendItem(ctx, compact ? padding.left + 105 : padding.left + 135, 15, "#c79a35", "Precio medio");
+  drawLegendItem(ctx, compact ? padding.left + 105 : padding.left + 135, 15, "#c9805a", "Precio medio");
 }
 
 function niceScale(value) {
@@ -546,10 +580,15 @@ function renderClients() {
           <td>${escapeHtml(client.email || client.phone || "")}</td>
           <td>
             <span class="row-actions">
-              <button class="edit-button" data-edit-client="${client.id}" type="button">Editar</button>
-              <button class="edit-button" data-profile-client="${client.id}" type="button">${icon("eye")} Ficha</button>
-              <button class="edit-button" data-invoice-client="${client.id}" type="button">Facturar</button>
-              <button class="delete-button" data-delete-client="${client.id}" type="button">Eliminar</button>
+              <button class="edit-button" data-invoice-client="${client.id}" type="button">${icon("invoice")} Facturar</button>
+              <span class="action-menu">
+                <button class="edit-button menu-trigger" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Más acciones">⋯</button>
+                <span class="menu-list hidden" role="menu">
+                  <button type="button" role="menuitem" data-edit-client="${client.id}">${icon("edit")} Editar</button>
+                  <button type="button" role="menuitem" data-profile-client="${client.id}">${icon("eye")} Ficha</button>
+                  <button type="button" role="menuitem" class="menu-danger" data-delete-client="${client.id}">${icon("trash")} Eliminar</button>
+                </span>
+              </span>
             </span>
           </td>
         </tr>
@@ -752,9 +791,14 @@ function renderInvoices() {
           <td>
             <span class="row-actions">
               <button class="edit-button" data-open-word="${invoice.id}" type="button">${icon("word")} Word</button>
-              ${invoice.pdf_url ? `<a class="link-button" href="${invoice.pdf_url}">PDF</a>` : ""}
-              <button class="edit-button" data-preview-invoice="${invoice.id}" type="button">${icon("eye")} Preview</button>
-              <button class="delete-button" data-delete-invoice="${invoice.id}" type="button">${icon("trash")} Eliminar</button>
+              <span class="action-menu">
+                <button class="edit-button menu-trigger" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Más acciones">⋯</button>
+                <span class="menu-list hidden" role="menu">
+                  <button type="button" role="menuitem" data-preview-invoice="${invoice.id}">${icon("eye")} Vista previa</button>
+                  ${invoice.pdf_url ? `<a role="menuitem" href="${invoice.pdf_url}">${icon("word")} PDF</a>` : ""}
+                  <button type="button" role="menuitem" class="menu-danger" data-delete-invoice="${invoice.id}">${icon("trash")} Eliminar</button>
+                </span>
+              </span>
             </span>
           </td>
         </tr>
@@ -823,7 +867,7 @@ function showInvoicePreview(invoice) {
       <div class="preview-spacer"></div>
       <div class="preview-totals">
         <span>SUMA</span><strong>${amountText(invoice.subtotal)}</strong>
-        <span>${amountText(invoice.vat_rate)}% I.V.A:</span><strong>${amountText(invoice.vat_amount)}</strong>
+        <span>${Number(invoice.vat_rate) ? `${amountText(invoice.vat_rate)}% I.V.A:` : "I.V.A. exento:"}</span><strong>${amountText(invoice.vat_amount)}</strong>
         <span class="total-label">TOTAL</span><strong class="total-value">${amountText(invoice.total)}€</strong>
       </div>
     </div>
@@ -850,11 +894,36 @@ function formatDateTime(value) {
   return date.toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" });
 }
 
+async function purgeTrashItem(type, id, label) {
+  const target = type === "client"
+    ? `el cliente "${label}" y todas sus facturas`
+    : `la factura ${label}`;
+  const first = window.confirm(
+    `¿Borrar definitivamente ${target}?\n\nSe eliminarán también sus Word/PDF generados. Esta acción no se puede deshacer.`
+  );
+  if (!first) return;
+  try {
+    const endpoint = type === "client" ? `/api/trash/clients/${id}` : `/api/trash/invoices/${id}`;
+    await api(endpoint, {
+      method: "DELETE",
+      body: JSON.stringify({ confirm: "ELIMINAR" }),
+    });
+    await refreshData();
+    toast(type === "client" ? "Cliente borrado definitivamente." : "Factura borrada definitivamente.");
+  } catch (error) {
+    toast(`No se pudo borrar: ${error.message}`);
+  }
+}
+
 async function restoreTrashItem(type, id) {
-  const endpoint = type === "client" ? `/api/trash/clients/${id}/restore` : `/api/trash/invoices/${id}/restore`;
-  await api(endpoint, { method: "PUT" });
-  await refreshData();
-  toast(type === "client" ? "Cliente restaurado." : "Factura restaurada.");
+  try {
+    const endpoint = type === "client" ? `/api/trash/clients/${id}/restore` : `/api/trash/invoices/${id}/restore`;
+    await api(endpoint, { method: "PUT" });
+    await refreshData();
+    toast(type === "client" ? "Cliente restaurado." : "Factura restaurada.");
+  } catch (error) {
+    toast(`No se pudo restaurar: ${error.message}`);
+  }
 }
 
 async function updatePendingDocuments() {
@@ -867,8 +936,8 @@ async function updatePendingDocuments() {
 async function deleteClient(client) {
   const relatedInvoices = state.invoices.filter((invoice) => invoice.client_id === client.id);
   const invoiceWarning = relatedInvoices.length
-    ? `\n\nEste cliente tiene ${relatedInvoices.length} factura(s). También se eliminarán esas facturas y sus Word/PDF generados.`
-    : "";
+    ? `\n\nEste cliente tiene ${relatedInvoices.length} factura(s); irán también a la papelera. Podrás restaurarlo todo desde Ajustes → Papelera, o borrarlo definitivamente desde allí.`
+    : "\n\nIrá a la papelera y podrás restaurarlo desde Ajustes → Papelera.";
   const first = window.confirm(`¿Eliminar el cliente "${client.full_name}"?${invoiceWarning}`);
   if (!first) return;
   const second = window.prompt(`Para confirmar definitivamente, escribe ELIMINAR`);
@@ -876,28 +945,38 @@ async function deleteClient(client) {
     toast("Eliminación cancelada.");
     return;
   }
-  const result = await api(`/api/clients/${client.id}`, {
-    method: "DELETE",
-    body: JSON.stringify({ confirm: "ELIMINAR" }),
-  });
-  await refreshData();
-  toast(`Cliente enviado a papelera. Facturas afectadas: ${result.deleted_invoices}.`);
+  try {
+    const result = await api(`/api/clients/${client.id}`, {
+      method: "DELETE",
+      body: JSON.stringify({ confirm: "ELIMINAR" }),
+    });
+    await refreshData();
+    toast(`Cliente enviado a papelera. Facturas afectadas: ${result.deleted_invoices}.`);
+  } catch (error) {
+    toast(`No se pudo eliminar: ${error.message}`);
+  }
 }
 
 async function deleteInvoice(invoice) {
-  const first = window.confirm(`¿Eliminar la factura ${invoice.invoice_number} de ${invoice.client_name}?`);
+  const first = window.confirm(
+    `¿Eliminar la factura ${invoice.invoice_number} de ${invoice.client_name}?\n\nIrá a la papelera y podrás restaurarla desde Ajustes → Papelera.`
+  );
   if (!first) return;
   const second = window.prompt(`Para confirmar, escribe el número de factura: ${invoice.invoice_number}`);
   if (second !== invoice.invoice_number) {
     toast("Eliminación cancelada.");
     return;
   }
-  await api(`/api/invoices/${invoice.id}`, {
-    method: "DELETE",
-    body: JSON.stringify({ confirm: "ELIMINAR", invoice_number: invoice.invoice_number }),
-  });
-  await refreshData();
-  toast(`Factura ${invoice.invoice_number} enviada a papelera.`);
+  try {
+    await api(`/api/invoices/${invoice.id}`, {
+      method: "DELETE",
+      body: JSON.stringify({ confirm: "ELIMINAR", invoice_number: invoice.invoice_number }),
+    });
+    await refreshData();
+    toast(`Factura ${invoice.invoice_number} enviada a papelera.`);
+  } catch (error) {
+    toast(`No se pudo eliminar: ${error.message}`);
+  }
 }
 
 function fillSettings() {
@@ -976,6 +1055,59 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
 }
+
+function closeActionMenus() {
+  // Los menús abiertos viven en document.body (portal); al cerrar vuelven
+  // junto a su botón, o se descartan si la fila ya no existe tras un render.
+  document.querySelectorAll("body > .menu-list").forEach((menu) => {
+    const home = menu._homeParent;
+    menu.classList.add("hidden");
+    if (home && home.isConnected) {
+      home.appendChild(menu);
+    } else {
+      menu.remove();
+    }
+  });
+  document.querySelectorAll('.menu-trigger[aria-expanded="true"]').forEach((button) => {
+    button.setAttribute("aria-expanded", "false");
+  });
+}
+
+function positionActionMenu(trigger, menu) {
+  const rect = trigger.getBoundingClientRect();
+  const menuRect = menu.getBoundingClientRect();
+  let top = rect.bottom + 6;
+  if (top + menuRect.height > window.innerHeight - 8) {
+    top = Math.max(8, rect.top - menuRect.height - 6);
+  }
+  menu.style.left = `${Math.max(8, rect.right - menuRect.width)}px`;
+  menu.style.top = `${top}px`;
+}
+
+document.addEventListener("click", (event) => {
+  const trigger = event.target.closest(".menu-trigger");
+  if (trigger) {
+    const menu = trigger.parentElement.querySelector(".menu-list");
+    closeActionMenus();
+    if (menu) {
+      // Portal a body: fuera de los stacking contexts y contenedores con
+      // scroll/backdrop-filter, para que nada lo tape ni lo recorte.
+      menu._homeParent = trigger.parentElement;
+      document.body.appendChild(menu);
+      menu.classList.remove("hidden");
+      trigger.setAttribute("aria-expanded", "true");
+      positionActionMenu(trigger, menu);
+    }
+    return;
+  }
+  closeActionMenus();
+});
+
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closeActionMenus();
+});
+window.addEventListener("scroll", closeActionMenus, true);
+window.addEventListener("resize", closeActionMenus);
 
 async function load() {
   const payload = await api("/api/bootstrap");

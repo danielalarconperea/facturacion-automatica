@@ -4,16 +4,25 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Facturación</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260611-3">
+    <link rel="stylesheet" href="/static/styles.css?v=20260612-6">
   </head>
   <body>
     <header class="app-header">
       <div>
-        <h1>Facturación</h1>
+        <h1>
+          <svg class="brand-sprig" aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M12 21.5C11.6 14.5 13.2 8.2 17.5 3"/>
+            <path d="M12.2 17.5C9.3 16.9 7.4 15.3 6.5 12.6C9.4 13.2 11.3 14.8 12.2 17.5Z"/>
+            <path d="M13 12.6C10.9 11.6 9.7 9.9 9.4 7.4C11.8 8.4 13 10.1 13 12.6Z"/>
+            <path d="M13.3 17.2C16.1 16.9 18.1 15.6 19.3 13C16.4 13.3 14.4 14.7 13.3 17.2Z"/>
+            <path d="M14.2 12.3C16.6 11.7 18.2 10.2 19 7.7C16.5 8.3 14.9 9.8 14.2 12.3Z"/>
+          </svg>
+          Facturación
+        </h1>
         <p>Clientes, facturas y documentos Word desde una sola pantalla.</p>
       </div>
       <nav class="tabs" aria-label="Secciones">
-        <button class="tab active" data-tab="dashboard">Dashboard</button>
+        <button class="tab active" data-tab="dashboard">Inicio</button>
         <button class="tab" data-tab="clients">Clientes</button>
         <button class="tab" data-tab="invoices">Facturas</button>
         <button class="tab" data-tab="settings">Ajustes</button>
@@ -30,7 +39,7 @@
     <main>
       <section id="dashboard" class="view active">
         <div class="section-title">
-          <h2>Dashboard</h2>
+          <h2>Inicio</h2>
           <select id="dashboardYear"></select>
         </div>
         <div class="metrics-grid">
@@ -305,6 +314,6 @@
     </div>
 
     <div id="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=20260611-6"></script>
+    <script src="/static/app.js?v=20260612-2"></script>
   </body>
 </html>

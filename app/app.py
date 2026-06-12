@@ -116,6 +116,10 @@ def calculate_invoice_totals(
 def parse_decimal(value: Decimal | str | float | int, field_name: str = "importe") -> Decimal:
     if isinstance(value, Decimal):
         return value
+    if isinstance(value, (int, float)):
+        # Valores ya numéricos (p. ej. JSON): sin heurística de miles, que
+        # confundiría el float 1.125 con el texto español "1.125" (= 1125).
+        return Decimal(str(value))
     text = str(value or "").strip()
     text = (
         text.replace("€", "")
@@ -126,6 +130,19 @@ def parse_decimal(value: Decimal | str | float | int, field_name: str = "importe
     text = re.sub(r"[^0-9,.\-]", "", text)
     if "," in text and "." in text:
         text = text.replace(".", "").replace(",", ".")
+    elif "." in text:
+        # Sin coma, el punto es separador de miles en notación española
+        # ("1.000" = mil) cuando agrupa de 3 en 3 con parte entera no nula;
+        # si no ("45.45", "0.5"), se trata como decimal.
+        groups = text.lstrip("-").split(".")
+        is_thousands = (
+            len(groups) > 1
+            and groups[0].strip("0") != ""
+            and len(groups[0]) <= 3
+            and all(len(group) == 3 for group in groups[1:])
+        )
+        if is_thousands:
+            text = text.replace(".", "")
     else:
         text = text.replace(",", ".")
     try:
@@ -558,6 +575,9 @@ def sync_monthly_docx(year: int, month: int) -> Path | None:
                 path=output_path,
             )
             return output_path
+    else:
+        # Sin facturas y sin archivo: si quedaba una tarea pendiente, ya está cumplida.
+        resolve_document_task("monthly", year=year, month=month)
     return None
 
 
@@ -755,6 +775,8 @@ def render_docx(
     subtotal_text = format_invoice_amount(subtotal)
     vat_amount_text = format_invoice_amount(vat_amount)
     total_text = format_invoice_amount(total)
+    vat_rate = parse_decimal(invoice.get("vat_rate") or "0", "IVA %")
+    vat_label = "I.V.A. exento:" if vat_rate == 0 else f"{format_invoice_amount(vat_rate)}% I.V.A:"
     client_postal_city = ", ".join(
         part
         for part in [
@@ -780,20 +802,27 @@ def render_docx(
         "        0,00": subtotal_text,
         "         0,00": vat_amount_text,
         "         TOTAL_FACTURA": f"{total_text}€",
+        "21% I.V.A:": vat_label,
     }
 
+    # Se monta en memoria y se vuelca al final: si algo falla a mitad no
+    # queda un .docx corrupto en disco.
+    buffer = io.BytesIO()
     with zipfile.ZipFile(TEMPLATE_PATH, "r") as zin:
-        with zipfile.ZipFile(docx_path, "w", zipfile.ZIP_DEFLATED) as zout:
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zout:
             for item in zin.infolist():
                 content = zin.read(item.filename)
                 if item.filename == "word/document.xml":
                     xml = content.decode("utf-8")
+                    # El centrado busca los textos originales de la plantilla
+                    # (p. ej. "21% I.V.A:"), así que va antes de sustituirlos.
+                    xml = improve_invoice_table_layout(xml)
                     for old, new in replacements.items():
                         xml = replace_text_node(xml, old, str(new))
-                    xml = improve_invoice_table_layout(xml)
                     xml = remove_second_invoice_block(xml)
                     content = xml.encode("utf-8")
                 zout.writestr(item, content)
+    docx_path.write_bytes(buffer.getvalue())
 
     created_pdf = convert_to_pdf(docx_path, pdf_path) if create_pdf else None
     return str(docx_path), str(created_pdf) if created_pdf else None
@@ -931,8 +960,40 @@ def parse_csv_text(text: str) -> list[dict]:
     return [{(key or "").strip(): (value or "").strip() for key, value in row.items()} for row in reader]
 
 
+LOCAL_HOSTNAMES = {"127.0.0.1", "localhost", "[::1]", "::1"}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "Facturacion/0.1"
+
+    def block_cross_origin(self) -> bool:
+        """Bloquea peticiones mutantes lanzadas desde otras webs (CSRF).
+
+        El servidor solo escucha en 127.0.0.1, pero cualquier página abierta en el
+        navegador podría lanzar POSTs "simples" contra él. Tres barreras:
+        - Host debe ser local (también frena DNS rebinding).
+        - Origin, si existe, debe ser local (los navegadores siempre lo envían
+          en peticiones cross-origin).
+        - El cuerpo debe declararse application/json, cosa que una petición
+          cross-origin no puede hacer sin un preflight CORS que aquí no se acepta.
+        Devuelve True si la petición quedó bloqueada (respuesta ya enviada).
+        """
+        host = (self.headers.get("Host") or "").strip().lower()
+        hostname = host.rsplit(":", 1)[0] if not host.startswith("[") else host.split("]")[0] + "]"
+        if hostname and hostname not in LOCAL_HOSTNAMES:
+            self.send_json({"error": "Petición rechazada: host no permitido."}, status=403)
+            return True
+        origin = (self.headers.get("Origin") or "").strip().lower()
+        if origin:
+            origin_host = urllib.parse.urlparse(origin).hostname or origin
+            if origin_host not in LOCAL_HOSTNAMES:
+                self.send_json({"error": "Petición rechazada: origen no permitido."}, status=403)
+                return True
+        content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if content_type and content_type != "application/json":
+            self.send_json({"error": "Petición rechazada: se espera JSON."}, status=415)
+            return True
+        return False
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
@@ -965,6 +1026,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404, "No encontrado")
 
     def do_POST(self) -> None:
+        if self.block_cross_origin():
+            return
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         try:
@@ -999,6 +1062,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404, "No encontrado")
 
     def do_PUT(self) -> None:
+        if self.block_cross_origin():
+            return
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         try:
@@ -1017,6 +1082,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(404, "No encontrado")
 
     def do_DELETE(self) -> None:
+        if self.block_cross_origin():
+            return
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         try:
@@ -1026,6 +1093,12 @@ class Handler(BaseHTTPRequestHandler):
             match = re.match(r"^/api/invoices/(\d+)$", path)
             if match:
                 return self.send_json(self.delete_invoice(int(match.group(1)), json_body(self)))
+            match = re.match(r"^/api/trash/clients/(\d+)$", path)
+            if match:
+                return self.send_json(self.purge_client(int(match.group(1)), json_body(self)))
+            match = re.match(r"^/api/trash/invoices/(\d+)$", path)
+            if match:
+                return self.send_json(self.purge_invoice(int(match.group(1)), json_body(self)))
         except Exception as exc:
             log_error_safely(exc, path)
             return self.send_json({"error": friendly_error(exc)}, status=400)
@@ -1161,10 +1234,10 @@ class Handler(BaseHTTPRequestHandler):
             if not client:
                 raise ValueError("Cliente no encontrado.")
             settings = get_settings(conn)
-            invoice_number = next_invoice_number(conn, issue_date)
             payment_method = (payload.get("payment_method") or "Efectivo").strip()
             if payment_method not in PAYMENT_METHODS:
                 raise ValueError("Forma de pago no valida. Usa Efectivo, Transferencia o Bizum.")
+            invoice_number = next_invoice_number(conn, issue_date)
             invoice = {
                 "invoice_number": invoice_number,
                 "issue_date": issue_date,
@@ -1179,14 +1252,13 @@ class Handler(BaseHTTPRequestHandler):
                 "payment_method": payment_method,
                 "status": "emitida",
             }
-            docx_path, pdf_path = render_docx(invoice, dict(client), settings)
             cur = conn.execute(
                 """
                 INSERT INTO invoices(
                     invoice_number, issue_date, client_id, concept, quantity,
                     unit_price, vat_rate, subtotal, vat_amount, total,
                     payment_method, status, docx_path, pdf_path, created_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
                 """,
                 (
                     invoice_number,
@@ -1199,21 +1271,75 @@ class Handler(BaseHTTPRequestHandler):
                     float(subtotal),
                     float(vat_amount),
                     float(total),
-                    invoice["payment_method"],
+                    payment_method,
                     "emitida",
-                    docx_path,
-                    pdf_path,
                     now_iso(),
                 ),
             )
+            invoice_id = cur.lastrowid
             conn.execute(
                 "INSERT OR IGNORE INTO concept_favorites(text, created_at) VALUES(?, ?)",
                 (concept.upper(), now_iso()),
             )
-            log_event(conn, f"Factura {invoice_number} creada", "info", "invoice", cur.lastrowid)
-            created_invoice = self._invoice_by_id(conn, cur.lastrowid)
+            log_event(conn, f"Factura {invoice_number} creada", "info", "invoice", invoice_id)
+            client_data = dict(client)
+
+        # El Word/PDF se genera fuera de la transacción: LibreOffice puede tardar
+        # segundos y mantendría bloqueada la base de datos para otras escrituras.
+        try:
+            docx_path, pdf_path = render_docx(invoice, client_data, settings)
+        except Exception:
+            self._discard_failed_invoice(invoice_id, invoice_number, issue_date)
+            raise
+
+        with db() as conn:
+            conn.execute(
+                "UPDATE invoices SET docx_path = ?, pdf_path = ? WHERE id = ?",
+                (docx_path, pdf_path, invoice_id),
+            )
+            row = conn.execute(
+                """
+                SELECT invoices.*, clients.full_name AS client_name, clients.tax_id AS client_tax_id,
+                       clients.address AS client_address, clients.postal_code AS client_postal_code,
+                       clients.city AS client_city, clients.email AS client_email, clients.phone AS client_phone
+                FROM invoices
+                JOIN clients ON clients.id = invoices.client_id
+                WHERE invoices.id = ?
+                """,
+                (invoice_id,),
+            ).fetchone()
+            created_invoice = self._with_links(dict(row))
+        # Si un bootstrap concurrente registró "Falta el Word" mientras se
+        # generaba, la tarea ya está cumplida.
+        resolve_document_task("invoice", invoice_id=invoice_id)
         monthly_path = sync_monthly_docx(monthly_year, monthly_month)
         return {"invoice": created_invoice, "monthly_docx_path": str(monthly_path) if monthly_path else None}
+
+    def _discard_failed_invoice(self, invoice_id: int, invoice_number: str, issue_date: str) -> None:
+        """Si el Word no se pudo generar, la factura no debe existir: se borra la
+        fila recién creada y, si nadie ha avanzado el contador mientras tanto, se
+        devuelve el número para que el siguiente intento lo reutilice."""
+        try:
+            year, _ = invoice_year_month(issue_date)
+            with db() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                settings = get_settings(conn)
+                series = invoice_series_for_year(settings, year)
+                number = invoice_number_value(invoice_number, series)
+                conn.execute("DELETE FROM invoices WHERE id = ?", (invoice_id,))
+                conn.execute("DELETE FROM document_tasks WHERE task_key = ?", (f"invoice:{invoice_id}",))
+                if number is not None:
+                    row = conn.execute("SELECT next_number FROM invoice_counters WHERE year = ?", (year,)).fetchone()
+                    if row and int(row["next_number"]) == number + 1:
+                        conn.execute("UPDATE invoice_counters SET next_number = ? WHERE year = ?", (number, year))
+                        if year == current_year():
+                            conn.execute(
+                                "UPDATE settings SET value = ? WHERE key = 'invoice_next_number' AND value = ?",
+                                (str(number), str(number + 1)),
+                            )
+                log_event(conn, f"Factura {invoice_number} descartada: no se pudo generar el Word.", "error", "invoice", invoice_id)
+        except Exception as exc:
+            log_error_safely(exc, "No se pudo deshacer la factura fallida")
 
     def delete_client(self, client_id: int, payload: dict) -> dict:
         if payload.get("confirm") != "ELIMINAR":
@@ -1252,6 +1378,71 @@ class Handler(BaseHTTPRequestHandler):
             log_event(conn, f"Factura {invoice['invoice_number']} enviada a papelera", "warning", "invoice", invoice_id)
         monthly_path = sync_monthly_docx(monthly_year, monthly_month)
         return {"deleted": True, "invoice_id": invoice_id, "monthly_docx_path": str(monthly_path) if monthly_path else None}
+
+    def purge_invoice(self, invoice_id: int, payload: dict) -> dict:
+        if payload.get("confirm") != "ELIMINAR":
+            raise ValueError("Confirmación inválida.")
+        with db() as conn:
+            invoice = conn.execute(
+                "SELECT * FROM invoices WHERE id = ? AND deleted_at IS NOT NULL", (invoice_id,)
+            ).fetchone()
+            if not invoice:
+                raise ValueError("La factura no está en la papelera.")
+            invoice = dict(invoice)
+            self._ensure_invoice_files_deletable([invoice])
+            conn.execute("DELETE FROM invoices WHERE id = ?", (invoice_id,))
+            conn.execute("DELETE FROM document_tasks WHERE task_key = ?", (f"invoice:{invoice_id}",))
+            log_event(conn, f"Factura {invoice['invoice_number']} eliminada definitivamente", "warning", "invoice", invoice_id)
+        self._delete_invoice_files_quietly([invoice])
+        return {"purged": True, "invoice_id": invoice_id}
+
+    def purge_client(self, client_id: int, payload: dict) -> dict:
+        if payload.get("confirm") != "ELIMINAR":
+            raise ValueError("Confirmación inválida.")
+        with db() as conn:
+            client = conn.execute(
+                "SELECT * FROM clients WHERE id = ? AND deleted_at IS NOT NULL", (client_id,)
+            ).fetchone()
+            if not client:
+                raise ValueError("El cliente no está en la papelera.")
+            invoices = [dict(row) for row in conn.execute("SELECT * FROM invoices WHERE client_id = ?", (client_id,)).fetchall()]
+            # Comprobar TODOS los archivos antes de borrar nada: así un Word
+            # abierto no deja un purgado a medias.
+            self._ensure_invoice_files_deletable(invoices)
+            for invoice in invoices:
+                conn.execute("DELETE FROM document_tasks WHERE task_key = ?", (f"invoice:{invoice['id']}",))
+            conn.execute("DELETE FROM invoices WHERE client_id = ?", (client_id,))
+            conn.execute("DELETE FROM clients WHERE id = ?", (client_id,))
+            log_event(conn, f"Cliente eliminado definitivamente: {client['full_name']}", "warning", "client", client_id)
+        self._delete_invoice_files_quietly(invoices)
+        return {"purged": True, "client_id": client_id, "purged_invoices": len(invoices)}
+
+    def _ensure_invoice_files_deletable(self, invoices: list[dict]) -> None:
+        generated_root = GENERATED_DIR.resolve()
+        for invoice in invoices:
+            for key in ("docx_path", "pdf_path"):
+                value = invoice.get(key)
+                if not value:
+                    continue
+                path = Path(value).resolve()
+                if not (str(path).startswith(str(generated_root)) and path.is_file()):
+                    continue
+                try:
+                    # Abrir para escritura falla si Word/el visor lo tiene bloqueado.
+                    with path.open("ab"):
+                        pass
+                except PermissionError:
+                    raise ValueError(
+                        f"No se pudo borrar el Word/PDF de la factura {invoice.get('invoice_number', '')} "
+                        "porque está abierto. Ciérralo y vuelve a intentarlo."
+                    )
+
+    def _delete_invoice_files_quietly(self, invoices: list[dict]) -> None:
+        for invoice in invoices:
+            try:
+                self._delete_invoice_files(invoice)
+            except OSError as exc:
+                log_error_safely(exc, f"No se pudo borrar algún archivo de la factura {invoice.get('invoice_number', '')}")
 
     def restore_client(self, client_id: int) -> dict:
         with db() as conn:
@@ -1335,13 +1526,13 @@ class Handler(BaseHTTPRequestHandler):
         with db() as conn:
             invoices = conn.execute("SELECT id, invoice_number, docx_path FROM invoices WHERE deleted_at IS NULL").fetchall()
         for invoice in invoices:
-            path = Path(invoice["docx_path"] or "")
-            if not path.is_file():
+            path_value = invoice["docx_path"] or ""
+            if not path_value or not Path(path_value).is_file():
                 register_document_task(
                     "invoice",
                     f"Falta el Word de la factura {invoice['invoice_number']}.",
                     invoice_id=invoice["id"],
-                    path=path if str(path) else None,
+                    path=path_value or None,
                 )
 
     def update_pending_documents(self) -> dict:
@@ -1352,12 +1543,32 @@ class Handler(BaseHTTPRequestHandler):
             task = dict(task)
             try:
                 if task["task_type"] == "invoice" and task["invoice_id"]:
-                    regenerated.append(str(self.regenerate_invoice_docx(int(task["invoice_id"]))))
+                    invoice_id = int(task["invoice_id"])
+                    with db() as conn:
+                        exists = conn.execute(
+                            "SELECT 1 FROM invoices WHERE id = ? AND deleted_at IS NULL",
+                            (invoice_id,),
+                        ).fetchone()
+                    if not exists:
+                        # La factura ya no existe o está en papelera: nada que regenerar.
+                        resolve_document_task("invoice", invoice_id=invoice_id)
+                        continue
+                    regenerated.append(str(self.regenerate_invoice_docx(invoice_id)))
                 elif task["task_type"] == "monthly" and task["year"] and task["month"]:
-                    path = combine_monthly_docx(int(task["year"]), int(task["month"]))
-                    resolve_document_task("monthly", year=int(task["year"]), month=int(task["month"]))
-                    regenerated.append(str(path))
+                    # sync_monthly_docx regenera o borra el Word mensual según queden
+                    # facturas, resuelve la tarea y la re-registra si Word sigue abierto.
+                    path = sync_monthly_docx(int(task["year"]), int(task["month"]))
+                    with db() as conn:
+                        still_pending = conn.execute(
+                            "SELECT 1 FROM document_tasks WHERE task_key = ? AND status = 'pending'",
+                            (task["task_key"],),
+                        ).fetchone()
+                    if path is not None and not still_pending:
+                        regenerated.append(str(path))
             except PermissionError:
+                continue
+            except Exception as exc:
+                log_error_safely(exc, f"Tarea pendiente {task.get('task_key', '')}")
                 continue
         self.detect_missing_documents()
         with db() as conn:
