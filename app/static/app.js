@@ -49,10 +49,34 @@ function amountText(value) {
   });
 }
 
-function autoConceptForQuantity(quantityValue) {
-  const quantity = Math.max(1, Math.round(parseAmount(quantityValue || 1)));
-  const serviceLabel = quantity === 1 ? "SERVICIO" : "SERVICIOS";
-  return `${quantity} ${serviceLabel}`;
+function pluralizeEs(word) {
+  if (!word) return word;
+  const upper = word === word.toUpperCase();
+  const low = word.toLowerCase();
+  if (low.endsWith("ión")) return word.slice(0, -3) + (upper ? "IONES" : "iones");
+  if (/[aeiouáéíóú]$/.test(low)) return word + (upper ? "S" : "s");
+  if (low.endsWith("z")) return word.slice(0, -1) + (upper ? "CES" : "ces");
+  if (low.endsWith("s")) return word;
+  return word + (upper ? "ES" : "es");
+}
+
+function pluralizePhrase(phrase) {
+  const i = phrase.indexOf(" ");
+  if (i === -1) return pluralizeEs(phrase);
+  return pluralizeEs(phrase.slice(0, i)) + phrase.slice(i);
+}
+
+function conceptPhrase(defaultConcept) {
+  const m = String(defaultConcept || "").match(/^\s*\d+\s+(.+)$/);
+  const phrase = (m ? m[1] : String(defaultConcept || "")).trim();
+  return phrase || "SERVICIO";
+}
+
+function conceptForQuantity(quantityValue, defaultConcept) {
+  const count = Math.max(1, Math.round(parseAmount(quantityValue || 1)));
+  const phrase = conceptPhrase(defaultConcept);
+  const text = count === 1 ? phrase : pluralizePhrase(phrase);
+  return `${count} ${text}`;
 }
 
 function normalizeText(value) {
@@ -64,15 +88,22 @@ function normalizeText(value) {
     .toUpperCase();
 }
 
-function isAutoConcept(value) {
-  const normalized = normalizeText(value);
-  return /^\d+\s+SERVICIOS?$/.test(normalized);
+function isAutoConcept(value, defaultConcept) {
+  const norm = normalizeText(value);
+  if (!norm) return true;
+  if (/^\d+\s+SERVICIOS?$/.test(norm)) return true;
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const phrase = normalizeText(conceptPhrase(defaultConcept));
+  const plural = normalizeText(pluralizePhrase(conceptPhrase(defaultConcept)));
+  return new RegExp(`^\\d+\\s+${esc(phrase)}$`).test(norm)
+    || new RegExp(`^\\d+\\s+${esc(plural)}$`).test(norm);
 }
 
 function syncConceptWithQuantity() {
+  const dflt = (state.settings && state.settings.default_concept) || "";
   const concept = $("invoiceConcept").value.trim();
-  if (!concept || isAutoConcept(concept)) {
-    $("invoiceConcept").value = autoConceptForQuantity($("quantity").value);
+  if (!concept || isAutoConcept(concept, dflt)) {
+    $("invoiceConcept").value = conceptForQuantity($("quantity").value, dflt);
   }
 }
 
@@ -950,9 +981,15 @@ async function purgeTrashItem(type, id, label) {
 async function restoreTrashItem(type, id) {
   try {
     const endpoint = type === "client" ? `/api/trash/clients/${id}/restore` : `/api/trash/invoices/${id}/restore`;
-    await api(endpoint, { method: "PUT" });
+    const result = await api(endpoint, { method: "PUT" });
     await refreshData();
-    toast(type === "client" ? "Cliente restaurado." : "Factura restaurada.");
+    if (type === "client") {
+      toast("Cliente restaurado.");
+    } else if (result && result.client_restored) {
+      toast(`Factura restaurada. También se restauró su cliente ${result.client_name || ""}.`.trim());
+    } else {
+      toast("Factura restaurada.");
+    }
   } catch (error) {
     toast(`No se pudo restaurar: ${error.message}`);
   }
@@ -1025,7 +1062,7 @@ function fillSettings() {
 
   $("invoiceDate").value = today();
   $("paymentMethod").value = "Efectivo";
-  $("invoiceConcept").value = state.settings.default_concept || autoConceptForQuantity($("quantity").value);
+  $("invoiceConcept").value = state.settings.default_concept || conceptForQuantity($("quantity").value, state.settings.default_concept);
   $("unitPrice").value = state.settings.default_unit_price || "0";
   $("vatRate").value = vatCalculationMode() === "exempt" ? "0" : state.settings.default_vat_rate || "21";
   updateTotals();

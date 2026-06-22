@@ -905,15 +905,60 @@ def normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", without_accents.upper()).strip()
 
 
-def auto_concept_for_quantity(quantity: Decimal) -> str:
+def pluralize_es(word: str) -> str:
+    """Plural en español de una sola palabra (los conceptos van en mayúsculas):
+    SESIÓN->SESIONES, SERVICIO->SERVICIOS, VEZ->VECES."""
+    if not word:
+        return word
+    upper = word.isupper()
+    low = word.lower()
+    if low.endswith("ión"):
+        return word[:-3] + ("IONES" if upper else "iones")
+    if low.endswith(("a", "e", "i", "o", "u", "á", "é", "í", "ó", "ú")):
+        return word + ("S" if upper else "s")
+    if low.endswith("z"):
+        return word[:-1] + ("CES" if upper else "ces")
+    if low.endswith("s"):
+        return word
+    return word + ("ES" if upper else "es")
+
+
+def _pluralize_phrase(phrase: str) -> str:
+    parts = phrase.split(" ", 1)
+    head = pluralize_es(parts[0])
+    return head + ((" " + parts[1]) if len(parts) > 1 else "")
+
+
+def _concept_phrase(default_concept: str) -> str:
+    """Texto base del concepto (en singular), sin el número inicial."""
+    match = re.match(r"^\s*\d+\s+(.+)$", default_concept or "")
+    phrase = (match.group(1) if match else (default_concept or "")).strip()
+    return phrase or "SERVICIO"
+
+
+def concept_for_quantity(quantity: Decimal, default_concept: str = "") -> str:
+    """Genera el concepto ajustando número y plural a la cantidad a partir del
+    concepto base: '1 SESIÓN DE OSTEOPATÍA' o '2 SESIONES DE OSTEOPATÍA'."""
     count = max(1, int(quantity.to_integral_value(rounding=ROUND_HALF_UP)))
-    label = "SERVICIO" if count == 1 else "SERVICIOS"
-    return f"{count} {label}"
+    phrase = _concept_phrase(default_concept)
+    text = phrase if count == 1 else _pluralize_phrase(phrase)
+    return f"{count} {text}"
 
 
-def is_auto_service_concept(concept: str) -> bool:
-    normalized = normalize_text(concept)
-    return bool(re.fullmatch(r"\d+\s+SERVICIOS?", normalized))
+def is_auto_concept(concept: str, default_concept: str = "") -> bool:
+    """True si el concepto es uno autogenerado (número + texto base del concepto,
+    en singular o plural) o el genérico '<n> SERVICIOS'."""
+    norm = normalize_text(concept)
+    if not norm:
+        return True
+    if re.fullmatch(r"\d+\s+SERVICIOS?", norm):
+        return True
+    phrase = normalize_text(_concept_phrase(default_concept))
+    plural = normalize_text(_pluralize_phrase(_concept_phrase(default_concept)))
+    return bool(
+        re.fullmatch(r"\d+\s+" + re.escape(phrase), norm)
+        or re.fullmatch(r"\d+\s+" + re.escape(plural), norm)
+    )
 
 
 def friendly_error(exc: Exception) -> str:
@@ -1070,6 +1115,23 @@ def open_local_file(path: Path) -> Path:
     return target
 
 
+def log_docx_warning(invoice_number: str, missing: list[str]) -> None:
+    """Avisa (best-effort) si la plantilla no contiene algún hueco esperado, para
+    que un Word generado 'a medias' no pase inadvertido. No rompe la generación."""
+    try:
+        with db() as conn:
+            log_event(
+                conn,
+                f"Aviso: la plantilla de factura no tiene {len(missing)} campo(s) esperado(s) "
+                f"al generar la factura {invoice_number}. Revisa PLANTILLA_FACTURA.docx.",
+                "error",
+                "invoice",
+                None,
+            )
+    except Exception:
+        pass
+
+
 def render_docx(
     invoice: dict,
     client: dict,
@@ -1136,6 +1198,14 @@ def render_docx(
                     # El centrado busca los textos originales de la plantilla
                     # (p. ej. "21% I.V.A:"), así que va antes de sustituirlos.
                     xml = improve_invoice_table_layout(xml)
+                    # Si la plantilla se ha descuadrado (p. ej. Word partió un
+                    # hueco en varios <w:t>), avisar en vez de sacar un Word mudo.
+                    missing = [
+                        old for old in replacements
+                        if not re.search(r"<w:t(?:\s[^>]*)?>" + re.escape(old) + r"</w:t>", xml)
+                    ]
+                    if missing:
+                        log_docx_warning(invoice.get("invoice_number", "?"), missing)
                     for old, new in replacements.items():
                         xml = replace_text_node(xml, old, str(new))
                     xml = remove_second_invoice_block(xml)
@@ -1533,25 +1603,23 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("Selecciona un cliente.")
 
         quantity = parse_decimal(payload.get("quantity") or "1", "cantidad")
-        if not concept or is_auto_service_concept(concept):
-            concept = auto_concept_for_quantity(quantity)
-        if not concept:
-            raise ValueError("El concepto es obligatorio.")
         unit_price = parse_decimal(payload.get("unit_price") or "0", "precio base")
         vat_rate = parse_decimal(payload.get("vat_rate") or "0", "IVA %")
-        calculated_subtotal = money(quantity * unit_price, "base calculada")
-        unit_vat_amount = money_up(unit_price * vat_rate / Decimal("100"), "IVA por sesión")
-        calculated_vat_amount = money(quantity * unit_vat_amount, "IVA calculado")
-        calculated_total = money(calculated_subtotal + calculated_vat_amount, "total calculado")
         calculated_subtotal, calculated_vat_amount, calculated_total = calculate_invoice_totals(
             quantity,
             unit_price,
             vat_rate,
             payload.get("vat_calculation_mode") or DEFAULT_SETTINGS["vat_calculation_mode"],
         )
-        subtotal = money(payload.get("subtotal") or calculated_subtotal, "base")
-        vat_amount = money(payload.get("vat_amount") or calculated_vat_amount, "IVA")
-        total = money(payload.get("total") or calculated_total, "total")
+
+        def _amount_or(raw, fallback, field):
+            # Distinguir "no enviado" ("" / None) de un 0 legítimo (factura
+            # exenta o línea a 0): un 0 numérico no debe caer al cálculo.
+            return money(raw if raw not in (None, "") else fallback, field)
+
+        subtotal = _amount_or(payload.get("subtotal"), calculated_subtotal, "base")
+        vat_amount = _amount_or(payload.get("vat_amount"), calculated_vat_amount, "IVA")
+        total = _amount_or(payload.get("total"), calculated_total, "total")
         issue_date = normalize_issue_date(payload.get("issue_date") or datetime.now().strftime("%Y-%m-%d"))
         monthly_year, monthly_month = invoice_year_month(issue_date)
 
@@ -1561,6 +1629,11 @@ class Handler(BaseHTTPRequestHandler):
             if not client:
                 raise ValueError("Cliente no encontrado.")
             settings = get_settings(conn)
+            default_concept = settings.get("default_concept", "")
+            if not concept or is_auto_concept(concept, default_concept):
+                concept = concept_for_quantity(quantity, default_concept)
+            if not concept:
+                raise ValueError("El concepto es obligatorio.")
             payment_method = (payload.get("payment_method") or "Efectivo").strip()
             if payment_method not in PAYMENT_METHODS:
                 raise ValueError("Forma de pago no valida. Usa Efectivo, Transferencia o Bizum.")
@@ -1701,7 +1774,12 @@ class Handler(BaseHTTPRequestHandler):
             if (payload.get("invoice_number") or "") != invoice["invoice_number"]:
                 raise ValueError("El número de factura no coincide.")
             monthly_year, monthly_month = invoice_year_month(invoice["issue_date"])
-            conn.execute("UPDATE invoices SET deleted_at = ? WHERE id = ?", (now_iso(), invoice_id))
+            cur = conn.execute(
+                "UPDATE invoices SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
+                (now_iso(), invoice_id),
+            )
+            if cur.rowcount == 0:
+                raise ValueError("La factura ya está en la papelera.")
             log_event(conn, f"Factura {invoice['invoice_number']} enviada a papelera", "warning", "invoice", invoice_id)
         monthly_path = sync_monthly_docx(monthly_year, monthly_month)
         return {"deleted": True, "invoice_id": invoice_id, "monthly_docx_path": str(monthly_path) if monthly_path else None}
@@ -1787,13 +1865,32 @@ class Handler(BaseHTTPRequestHandler):
             if not invoice:
                 raise ValueError("Factura no encontrada.")
             invoice = dict(invoice)
-            conn.execute("UPDATE clients SET deleted_at = NULL, updated_at = ? WHERE id = ?", (now_iso(), invoice["client_id"]))
+            client_row = conn.execute(
+                "SELECT full_name, deleted_at FROM clients WHERE id = ?", (invoice["client_id"],)
+            ).fetchone()
+            client_was_deleted = bool(client_row and client_row["deleted_at"])
+            if client_was_deleted:
+                conn.execute(
+                    "UPDATE clients SET deleted_at = NULL, updated_at = ? WHERE id = ?",
+                    (now_iso(), invoice["client_id"]),
+                )
+                log_event(
+                    conn,
+                    f"Cliente {client_row['full_name']} restaurado junto a la factura {invoice['invoice_number']}",
+                    "info",
+                    "client",
+                    invoice["client_id"],
+                )
             conn.execute("UPDATE invoices SET deleted_at = NULL WHERE id = ?", (invoice_id,))
             log_event(conn, f"Factura {invoice['invoice_number']} restaurada", "info", "invoice", invoice_id)
             restored = self._invoice_by_id(conn, invoice_id)
         year, month = invoice_year_month(invoice["issue_date"])
         sync_monthly_docx(year, month)
-        return {"invoice": restored}
+        return {
+            "invoice": restored,
+            "client_restored": client_was_deleted,
+            "client_name": client_row["full_name"] if client_row else "",
+        }
 
     def regenerate_invoice_docx(self, invoice_id: int) -> Path:
         with db() as conn:
