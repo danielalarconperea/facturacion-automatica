@@ -9,7 +9,12 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import unicodedata
+try:
+    import winreg  # solo Windows (stdlib); ausente en dev/test no-Windows
+except ImportError:
+    winreg = None
 import urllib.parse
 import zipfile
 import csv
@@ -47,6 +52,7 @@ DEFAULT_SETTINGS = {
     "default_unit_price": "0",
     "default_vat_rate": "21",
     "vat_calculation_mode": "unit_ceil",
+    "cloud_backup_dir": "",
 }
 
 PAYMENT_METHODS = {"Efectivo", "Transferencia", "Bizum"}
@@ -170,6 +176,291 @@ def db() -> sqlite3.Connection:
     return conn
 
 
+# Copia de seguridad en la nube: se apoya en una carpeta que un cliente de
+# sincronizacion ya existente (OneDrive por defecto en Windows 11, o Google
+# Drive/Dropbox/pCloud) sube solo. La app solo escribe ahi; no maneja
+# credenciales ni binarios externos, asi que sigue siendo Python puro de stdlib.
+CLOUD_STATUS_PATH = DB_PATH.parent / "cloud_backup_status.json"
+CLOUD_KEEP = 90  # copias a conservar en la nube (mas que las 30 locales)
+CLOUD_SUBFOLDER = "Facturacion Backups"
+
+
+def _valid_dir(value) -> Path | None:
+    """Devuelve Path si 'value' es una carpeta LOCAL existente; si no, None.
+    Descarta vacios y rutas UNC (\\\\servidor\\...) que podrian bloquear is_dir()
+    esperando el timeout SMB. Nunca lanza."""
+    if not value:
+        return None
+    s = str(value).strip().strip('"')
+    if not s or s.startswith("\\\\"):
+        return None
+    try:
+        p = Path(s)
+        return p if p.is_dir() else None
+    except OSError:
+        return None
+
+
+def _is_volume_root(p: Path) -> bool:
+    """True para 'C:\\', 'G:\\'... Nunca aceptamos la raiz de un disco como destino."""
+    try:
+        return p.parent == p
+    except Exception:
+        return False
+
+
+def _writable(base: Path) -> bool:
+    """Confirma permiso de escritura REAL creando y borrando un .tmp. Nunca lanza."""
+    probe = base / (".factbk_probe_%d.tmp" % os.getpid())
+    try:
+        with open(probe, "wb") as fh:
+            fh.write(b"x")
+    except OSError:
+        return False
+    finally:
+        try:
+            os.remove(probe)
+        except OSError:
+            pass
+    return True
+
+
+def _onedrive_registry_accounts() -> list[tuple[bool, Path]]:
+    """Lista [(es_personal, Path)] desde HKCU\\Software\\Microsoft\\OneDrive\\Accounts.
+    Ignora subclaves sin UserFolder o vacio (Business2/FileCoAuth fantasma). Nunca lanza."""
+    out: list[tuple[bool, Path]] = []
+    if winreg is None:
+        return out
+    try:
+        base = winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\OneDrive\Accounts")
+    except OSError:
+        return out
+    try:
+        i = 0
+        while True:
+            try:
+                sub = winreg.EnumKey(base, i)
+            except OSError:
+                break
+            i += 1
+            try:
+                with winreg.OpenKey(base, sub) as k:
+                    folder, _ = winreg.QueryValueEx(k, "UserFolder")
+            except OSError:
+                continue
+            p = _valid_dir(folder)
+            if p is not None:
+                out.append((sub.lower().startswith("personal"), p))
+    finally:
+        winreg.CloseKey(base)
+    return out
+
+
+def detect_onedrive_dir() -> Path | None:
+    """Carpeta base de OneDrive priorizando la cuenta PERSONAL (evita el tenant de
+    empresa, mejor para datos personales). Devuelve Path|None. Nunca lanza."""
+    reg = _onedrive_registry_accounts()
+    ordered = []
+    ordered.append(os.environ.get("OneDriveConsumer"))          # 1 personal (env)
+    ordered += [str(p) for is_p, p in reg if is_p]              # 2 personal (registro)
+    ordered.append(os.environ.get("OneDrive"))                  # 3 cuenta activa
+    ordered.append(os.environ.get("OneDriveCommercial"))        # 4 empresa
+    ordered += [str(p) for is_p, p in reg if not is_p]          # 5 cualquier business
+    ordered.append(str(Path(os.path.expanduser("~")) / "OneDrive"))  # 6 fallback
+    seen = set()
+    for cand in ordered:
+        d = _valid_dir(cand)
+        if d is None:
+            continue
+        key = os.path.normcase(str(d))
+        if key in seen:
+            continue
+        seen.add(key)
+        return d
+    return None
+
+
+def _gdrive_root_from_db(local_appdata: str) -> Path | None:
+    """Lee root_preference_sqlite.db y devuelve la carpeta REAL de 'Mi unidad'
+    (last_seen_absolute_path con is_my_drive=1). Solo lectura; None si no esta
+    montada. Nunca usa media.last_mount_point (listaria USB -> C:\\)."""
+    db_path = Path(local_appdata) / "Google" / "DriveFS" / "root_preference_sqlite.db"
+    if not db_path.is_file():
+        return None
+    uris = (
+        "file:" + db_path.as_posix() + "?mode=ro",
+        "file:" + db_path.as_posix() + "?mode=ro&immutable=1",
+    )
+    for uri in uris:
+        try:
+            con = sqlite3.connect(uri, uri=True, timeout=0.5)
+        except sqlite3.Error:
+            continue
+        try:
+            queries = (
+                "SELECT last_seen_absolute_path FROM roots WHERE is_my_drive=1 AND last_seen_absolute_path IS NOT NULL",
+                "SELECT last_seen_absolute_path FROM roots WHERE last_seen_absolute_path IS NOT NULL",
+            )
+            for q in queries:
+                try:
+                    for (path,) in con.execute(q):
+                        d = _valid_dir(path)
+                        if d is not None and not _is_volume_root(d):
+                            return d
+                except sqlite3.Error:
+                    continue
+        finally:
+            con.close()
+    return None
+
+
+def detect_google_drive_dir() -> Path | None:
+    """Carpeta de 'Mi unidad' de Google Drive, o None. Nunca escanea letras de unidad.
+    'instalado' != 'montado'."""
+    local = os.environ.get("LOCALAPPDATA")
+    drivefs = (Path(local) / "Google" / "DriveFS") if local else None
+    try:
+        installed = bool(drivefs and drivefs.is_dir())
+    except OSError:
+        installed = False
+    if not installed:
+        return None
+    try:
+        return _gdrive_root_from_db(local)
+    except Exception:
+        return None
+
+
+def detect_dropbox_dir() -> Path | None:
+    """Carpeta raiz de Dropbox (prefiere cuenta personal), o None. Lee el info.json
+    oficial; fallback ~/Dropbox solo si hay instalacion real. Nunca lanza."""
+    bases = [b for b in (os.environ.get("APPDATA"), os.environ.get("LOCALAPPDATA")) if b]
+    for b in bases:
+        info = Path(b) / "Dropbox" / "info.json"
+        try:
+            if not info.is_file():
+                continue
+            data = json.loads(info.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        paths = []
+        for key in ("personal", "business"):
+            entry = data.get(key)
+            if isinstance(entry, dict) and entry.get("path"):
+                paths.append(entry["path"])
+        if not paths:
+            for entry in data.values():
+                if isinstance(entry, dict) and entry.get("path"):
+                    paths.append(entry["path"])
+        for raw in paths:
+            d = _valid_dir(raw)
+            if d is not None:
+                return d
+    if any((Path(b) / "Dropbox").is_dir() for b in bases):
+        return _valid_dir(Path(os.path.expanduser("~")) / "Dropbox")
+    return None
+
+
+def detect_cloud_dir(require_writable: bool = False) -> tuple[Path, str] | None:
+    """Detecta el cliente de sincronizacion preferente y devuelve
+    (Path_subcarpeta, etiqueta_proveedor) o None. Prioridad: OneDrive (personal)
+    -> Google Drive (Mi unidad) -> Dropbox. La subcarpeta NO se crea aqui. Nunca
+    lanza, nunca escanea unidades, nunca toca rutas UNC."""
+    providers = (
+        (detect_onedrive_dir, "OneDrive"),
+        (detect_google_drive_dir, "Google Drive"),
+        (detect_dropbox_dir, "Dropbox"),
+    )
+    for detector, label in providers:
+        try:
+            base = detector()
+        except Exception:
+            base = None
+        if base is None:
+            continue
+        if require_writable and not _writable(base):
+            continue
+        return (base / CLOUD_SUBFOLDER, label)
+    return None
+
+
+def _read_cloud_setting(conn: sqlite3.Connection | None = None) -> str:
+    """Lee cloud_backup_dir de los ajustes; tolera que la tabla aun no exista."""
+    try:
+        if conn is not None:
+            row = conn.execute("SELECT value FROM settings WHERE key = ?", ("cloud_backup_dir",)).fetchone()
+            return (row["value"] if row else "") or ""
+        with db() as own:
+            row = own.execute("SELECT value FROM settings WHERE key = ?", ("cloud_backup_dir",)).fetchone()
+            return (row["value"] if row else "") or ""
+    except Exception:
+        return ""
+
+
+def resolve_cloud_target(conn: sqlite3.Connection | None = None, require_writable: bool = False) -> tuple[Path | None, str]:
+    """Devuelve (carpeta_destino|None, etiqueta). La etiqueta es 'carpeta elegida
+    manualmente' si hay ajuste/variable, o el proveedor detectado, o ''."""
+    raw = os.environ.get("FACTURACION_CLOUD_BACKUP_DIR")
+    if raw is None:
+        raw = _read_cloud_setting(conn)
+    raw = (raw or "").strip()
+    if raw:
+        return (Path(os.path.expandvars(os.path.expanduser(raw))), "carpeta elegida manualmente")
+    detected = detect_cloud_dir(require_writable=require_writable)
+    if detected is None:
+        return (None, "")
+    return detected
+
+
+def resolve_cloud_dir(conn: sqlite3.Connection | None = None) -> Path | None:
+    """Carpeta destino real de la copia (prueba permiso de escritura al detectar)."""
+    return resolve_cloud_target(conn, require_writable=True)[0]
+
+
+def record_cloud_status(ok: bool, target: Path | None = None, name: str = "", error: str | None = None) -> None:
+    try:
+        CLOUD_STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CLOUD_STATUS_PATH.write_text(
+            json.dumps(
+                {
+                    "ok": bool(ok),
+                    "at": now_iso(),
+                    "dir": str(target) if target else "",
+                    "name": name,
+                    "error": error,
+                }
+            ),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def mirror_backup_to_cloud(backup_path: Path) -> None:
+    """Copia best-effort del backup recien creado a la carpeta sincronizada.
+    Nunca lanza: una copia local jamas debe fallar porque la nube no este lista."""
+    try:
+        target_dir = resolve_cloud_dir()
+        if target_dir is None:
+            return  # sin carpeta configurada ni OneDrive: no hay nada que hacer
+        target_dir.mkdir(parents=True, exist_ok=True)
+        # Escritura atomica: .tmp + replace para que el cliente de sync nunca
+        # suba un archivo a medio escribir.
+        final = target_dir / backup_path.name
+        tmp = target_dir / (backup_path.name + ".tmp")
+        shutil.copy2(backup_path, tmp)
+        os.replace(tmp, final)
+        # Rotacion en la nube por numero, simetrica a la rotacion local.
+        copies = sorted(target_dir.glob("facturacion_*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in copies[CLOUD_KEEP:]:
+            old.unlink(missing_ok=True)
+        record_cloud_status(True, target=target_dir, name=final.name)
+    except Exception as exc:
+        record_cloud_status(False, error=str(exc))
+
+
 def backup_database(reason: str = "auto") -> Path | None:
     if not DB_PATH.exists():
         return None
@@ -188,7 +479,35 @@ def backup_database(reason: str = "auto") -> Path | None:
     backups = sorted(BACKUPS_DIR.glob("facturacion_*.db"), key=lambda path: path.stat().st_mtime, reverse=True)
     for old_backup in backups[30:]:
         old_backup.unlink(missing_ok=True)
+    mirror_backup_to_cloud(backup_path)
     return backup_path
+
+
+def _db_changed_since_last_backup() -> bool:
+    try:
+        if not DB_PATH.exists():
+            return False
+        backups = sorted(BACKUPS_DIR.glob("facturacion_*.db"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not backups:
+            return True
+        return DB_PATH.stat().st_mtime > backups[0].stat().st_mtime
+    except Exception:
+        return True
+
+
+def start_periodic_backup(interval_seconds: int = 6 * 3600) -> None:
+    """Mientras la app esta abierta, crea (y sube) una copia cada pocas horas si
+    la base de datos cambio, para capturar el trabajo del dia sin reiniciar."""
+    def _loop() -> None:
+        stop = threading.Event()
+        while not stop.wait(interval_seconds):
+            try:
+                if _db_changed_since_last_backup():
+                    backup_database("periodic")
+            except Exception:
+                pass
+
+    threading.Thread(target=_loop, daemon=True, name="periodic-backup").start()
 
 
 def table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -1053,6 +1372,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(self.import_clients(json_body(self)))
             if path == "/api/documents/update-pending":
                 return self.send_json(self.update_pending_documents())
+            if path == "/api/backup/cloud":
+                return self.send_json(self.cloud_backup_now())
             match = re.match(r"^/api/invoices/(\d+)/open-word$", path)
             if match:
                 return self.send_json(self.open_invoice_word(int(match.group(1))))
@@ -1116,6 +1437,7 @@ class Handler(BaseHTTPRequestHandler):
                 "concept_favorites": self._concept_favorites(conn),
                 "document_tasks": self._document_tasks(conn),
                 "backups": self._backups(),
+                "cloud_backup": self._cloud_backup_status(conn),
             }
 
     def list_clients(self) -> dict:
@@ -1130,6 +1452,11 @@ class Handler(BaseHTTPRequestHandler):
         with db() as conn:
             settings = save_settings(conn, payload)
             return {"settings": settings}
+
+    def cloud_backup_now(self) -> dict:
+        backup_database("manual")
+        with db() as conn:
+            return {"cloud": self._cloud_backup_status(conn)}
 
     def import_settings(self, payload: dict) -> dict:
         imported_settings = normalize_settings_import(payload)
@@ -1663,6 +1990,23 @@ class Handler(BaseHTTPRequestHandler):
         ).fetchall()
         return rows_to_dicts(rows)
 
+    def _cloud_backup_status(self, conn: sqlite3.Connection | None = None) -> dict:
+        target, provider = resolve_cloud_target(conn, require_writable=False)
+        detected = detect_cloud_dir(require_writable=False)
+        last = None
+        try:
+            if CLOUD_STATUS_PATH.exists():
+                last = json.loads(CLOUD_STATUS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            last = None
+        return {
+            "target_dir": str(target) if target else "",
+            "provider": provider,
+            "detected_provider": detected[1] if detected else "",
+            "dir_exists": bool(target and target.exists()),
+            "last": last,
+        }
+
     def _backups(self) -> list[dict]:
         backups = []
         for path in sorted(BACKUPS_DIR.glob("facturacion_*.db"), key=lambda item: item.stat().st_mtime, reverse=True)[:20]:
@@ -1778,6 +2122,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     init_db()
+    start_periodic_backup()
     port = int(os.environ.get("PORT", "8765"))
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     if sys.stdout:

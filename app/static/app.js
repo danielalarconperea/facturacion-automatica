@@ -190,6 +190,7 @@ function applyBootstrap(payload) {
   state.conceptFavorites = payload.concept_favorites || [];
   state.documentTasks = payload.document_tasks || [];
   state.backups = payload.backups || [];
+  state.cloudBackup = payload.cloud_backup || null;
 }
 
 async function refreshData() {
@@ -204,6 +205,7 @@ function renderAll() {
   renderInvoices();
   renderDashboard();
   renderMaintenance();
+  renderCloudBackup();
   renderConceptFavorites();
   renderPendingState();
 }
@@ -290,6 +292,36 @@ function renderMaintenance() {
   $("backupsList").innerHTML = state.backups.length
     ? state.backups.slice(0, 8).map((backup) => `<div class="list-item"><strong>${escapeHtml(backup.name)}</strong><span>${formatDateTime(backup.updated_at)} · ${Math.round((backup.size || 0) / 1024)} KB</span></div>`).join("")
     : `<div class="list-item"><strong>Sin copias todavía</strong><span>Se crearán al arrancar la app.</span></div>`;
+}
+
+function renderCloudBackup() {
+  const info = state.cloudBackup || {};
+  const input = $("cloudBackupDir");
+  if (input && document.activeElement !== input) {
+    input.value = state.settings.cloud_backup_dir || "";
+    input.placeholder = info.target_dir
+      ? info.target_dir
+      : "Automático (no se detectó ninguna nube)";
+  }
+
+  const box = $("cloudBackupStatus");
+  if (!box) return;
+  const last = info.last;
+  const target = info.target_dir;
+  const provider = info.provider || "carpeta";
+  let html;
+  if (!target) {
+    html = `<div class="list-item warning"><strong>No se detectó ninguna nube</strong><span>No encuentro OneDrive, Google Drive ni Dropbox. Las copias solo se guardan en este equipo. Puedes escribir una carpeta manualmente arriba.</span></div>`;
+  } else if (!info.dir_exists) {
+    html = `<div class="list-item warning"><strong>Carpeta no disponible</strong><span>No encuentro ${escapeHtml(target)}. Revisa que la nube esté activa.</span></div>`;
+  } else if (last && last.ok) {
+    html = `<div class="list-item"><strong>Última copia en la nube: OK</strong><span>${formatDateTime(last.at)} · ${escapeHtml(target)} (${escapeHtml(provider)})</span></div>`;
+  } else if (last && !last.ok) {
+    html = `<div class="list-item danger-item"><strong>La última copia en la nube falló</strong><span>${escapeHtml(last.error || "Error desconocido")}</span></div>`;
+  } else {
+    html = `<div class="list-item"><strong>Ruta en uso</strong><span>${escapeHtml(target)} (${escapeHtml(provider)}) · aún sin copias subidas</span></div>`;
+  }
+  box.innerHTML = html;
 }
 
 function invoiceYear(invoice) {
@@ -1011,6 +1043,7 @@ function settingsPayload() {
     default_unit_price: $("defaultUnitPrice").value,
     default_vat_rate: $("defaultVatRate").value,
     vat_calculation_mode: $("vatCalculationMode").value,
+    cloud_backup_dir: $("cloudBackupDir").value,
   };
 }
 
@@ -1159,6 +1192,42 @@ $("forceUpdateDocuments").addEventListener("click", async () => {
     await updatePendingDocuments();
   } catch (error) {
     toast(error.message);
+  }
+});
+
+$("cloudBackupDir").addEventListener("change", async () => {
+  try {
+    const result = await api("/api/settings", {
+      method: "POST",
+      body: JSON.stringify({ cloud_backup_dir: $("cloudBackupDir").value }),
+    });
+    state.settings = result.settings;
+    await refreshData();
+    toast("Carpeta de la nube guardada.");
+  } catch (error) {
+    toast(error.message);
+  }
+});
+
+$("cloudBackupNow").addEventListener("click", async () => {
+  const button = $("cloudBackupNow");
+  button.disabled = true;
+  try {
+    const result = await api("/api/backup/cloud", { method: "POST" });
+    state.cloudBackup = result.cloud;
+    renderCloudBackup();
+    const last = result.cloud && result.cloud.last;
+    if (last && last.ok) {
+      toast("Copia en la nube realizada.");
+    } else if (last && !last.ok) {
+      toast(`No se pudo copiar a la nube: ${last.error || "error desconocido"}`);
+    } else {
+      toast("No hay carpeta de nube configurada.");
+    }
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    button.disabled = false;
   }
 });
 

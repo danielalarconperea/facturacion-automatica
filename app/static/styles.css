@@ -856,6 +856,13 @@ th:last-child {
   margin-top: 13px;
 }
 
+.panel-note {
+  margin: -2px 0 13px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .list-item {
   display: grid;
   gap: 4px;
@@ -959,6 +966,97 @@ th:last-child {
 
 .full-row {
   grid-column: 1 / -1;
+}
+
+/* Ajustes: bloques avanzados plegables */
+.advanced-block {
+  margin: 3px 0 13px;
+}
+
+.advanced-block > summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 9px 13px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--panel-soft);
+  color: var(--accent-strong);
+  font-size: 13px;
+  font-weight: 720;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background-color 150ms ease,
+    border-color 150ms ease;
+}
+
+.advanced-block > summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-block > summary::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  margin-left: 3px;
+  border-right: 2px solid var(--accent);
+  border-bottom: 2px solid var(--accent);
+  transform: rotate(-45deg);
+  transition: transform 160ms ease;
+}
+
+.advanced-block[open] > summary::before {
+  transform: rotate(45deg);
+}
+
+.advanced-block > summary:hover {
+  background: var(--accent-soft);
+  border-color: rgba(79, 124, 104, 0.34);
+}
+
+.summary-hint {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.advanced-block .advanced-body {
+  padding: 15px 3px 0;
+}
+
+.group-title {
+  margin: 2px 0 11px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 760;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+
+.advanced-tools {
+  margin: 18px 0 0;
+}
+
+.advanced-tools > summary {
+  min-height: 48px;
+  padding: 11px 16px;
+  background: rgba(255, 253, 247, 0.88);
+  border: 1px solid var(--line-soft);
+  box-shadow: var(--shadow-soft);
+  -webkit-backdrop-filter: blur(7px);
+  backdrop-filter: blur(7px);
+  font-size: 14px;
+}
+
+.advanced-tools .settings-panels {
+  margin-top: 15px;
 }
 
 #toast {

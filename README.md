@@ -21,6 +21,7 @@ Funciona como una app web local: se abre en el navegador, pero los datos se guar
 - Importacion CSV de clientes.
 - Importacion de configuracion desde JSON.
 - Copias de seguridad automaticas al arrancar.
+- Copia de seguridad en la nube a una carpeta sincronizada (OneDrive por defecto, o Google Drive/Dropbox/pCloud), con deteccion automatica e indicador de estado.
 
 ## Tecnologias
 
