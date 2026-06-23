@@ -1276,8 +1276,44 @@ $("importClientsButton").addEventListener("click", async () => {
     });
     state.clients = result.clients;
     $("importClientsCsv").value = "";
+    $("importClientsFile").value = "";
     await refreshData();
     toast(`Clientes importados: ${result.imported}. Omitidos: ${result.skipped}.`);
+  } catch (error) {
+    toast(error.message);
+  }
+});
+
+function wireCsvFile(fileId, textareaId) {
+  $(fileId).addEventListener("change", async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    try {
+      $(textareaId).value = await file.text();
+      toast(`Archivo cargado: ${file.name}. Pulsa el botón para importar.`);
+    } catch (error) {
+      toast("No pude leer el archivo.");
+    }
+  });
+}
+wireCsvFile("importClientsFile", "importClientsCsv");
+wireCsvFile("importInvoicesFile", "importInvoicesCsv");
+
+$("importInvoicesButton").addEventListener("click", async () => {
+  try {
+    const result = await api("/api/import/invoices", {
+      method: "POST",
+      body: JSON.stringify({ csv: $("importInvoicesCsv").value }),
+    });
+    $("importInvoicesCsv").value = "";
+    $("importInvoicesFile").value = "";
+    await refreshData();
+    let msg = `Facturas importadas: ${result.imported}. Omitidas: ${result.skipped}.`;
+    if (result.unmatched && result.unmatched.length) {
+      const sample = result.unmatched.slice(0, 3).join(", ");
+      msg += ` Sin cliente: ${result.unmatched.length} (${sample}${result.unmatched.length > 3 ? "…" : ""}).`;
+    }
+    toast(msg);
   } catch (error) {
     toast(error.message);
   }

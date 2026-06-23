@@ -1455,6 +1455,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({"opened": True, "path": str(opened_path)})
             if path == "/api/import/clients":
                 return self.send_json(self.import_clients(json_body(self)))
+            if path == "/api/import/invoices":
+                return self.send_json(self.import_invoices(json_body(self)))
             if path == "/api/documents/update-pending":
                 return self.send_json(self.update_pending_documents())
             if path == "/api/backup/cloud":
@@ -2056,6 +2058,117 @@ class Handler(BaseHTTPRequestHandler):
             log_event(conn, f"Importación de clientes: {imported} importados, {skipped} omitidos", "info", "import", None)
             clients = self._clients(conn)
         return {"imported": imported, "skipped": skipped, "clients": clients}
+
+    def import_invoices(self, payload: dict) -> dict:
+        rows = parse_csv_text(payload.get("csv") or "")
+        imported = 0
+        skipped = 0
+        unmatched: list[str] = []
+
+        def cell(row, *keys):
+            for k in keys:
+                v = row.get(k)
+                if v not in (None, ""):
+                    return str(v).strip()
+            return ""
+
+        def amount(row, *keys):
+            raw = cell(row, *keys)
+            if raw == "":
+                return None
+            try:
+                return money(raw, "importe")
+            except ValueError:
+                return None
+
+        with db() as conn:
+            settings = get_settings(conn)
+            default_unit = settings.get("default_unit_price", "0")
+            default_vat = settings.get("default_vat_rate", "21")
+            mode = settings.get("vat_calculation_mode", DEFAULT_SETTINGS["vat_calculation_mode"])
+            for row in rows:
+                number = cell(row, "invoice_number", "n_factura", "numero", "número")
+                name = cell(row, "full_name", "cliente", "client_name", "nombre")
+                if not number or not name:
+                    skipped += 1
+                    continue
+                if conn.execute("SELECT id FROM invoices WHERE invoice_number = ?", (number,)).fetchone():
+                    skipped += 1
+                    continue
+                dni = cell(row, "tax_id", "dni")
+                client = conn.execute(
+                    "SELECT id FROM clients WHERE UPPER(full_name) = UPPER(?) AND IFNULL(tax_id, '') = ? AND deleted_at IS NULL",
+                    (name, dni),
+                ).fetchone()
+                if not client:
+                    client = conn.execute(
+                        "SELECT id FROM clients WHERE UPPER(full_name) = UPPER(?) AND deleted_at IS NULL",
+                        (name,),
+                    ).fetchone()
+                if not client:
+                    skipped += 1
+                    unmatched.append(name)
+                    continue
+
+                concept = cell(row, "concept", "concepto") or "1 SERVICIO"
+                try:
+                    quantity = parse_decimal(cell(row, "quantity", "cantidad"), "cantidad")
+                    if quantity <= 0:
+                        raise ValueError
+                except ValueError:
+                    match = re.match(r"^\s*(\d+)", concept)
+                    quantity = Decimal(match.group(1)) if match else Decimal("1")
+                vat_rate = parse_decimal(cell(row, "vat_rate", "iva") or default_vat or "21", "IVA %")
+                subtotal = amount(row, "subtotal", "importe", "suma", "base")
+                vat_amount = amount(row, "vat_amount", "iva_importe")
+                total = amount(row, "total")
+                if subtotal is None or vat_amount is None or total is None:
+                    up = cell(row, "unit_price", "precio")
+                    if up:
+                        unit_price = parse_decimal(up, "precio")
+                    elif subtotal is not None and quantity > 0:
+                        unit_price = money(subtotal / quantity, "precio")
+                    else:
+                        unit_price = parse_decimal(default_unit or "0", "precio")
+                    calc_sub, calc_vat, calc_total = calculate_invoice_totals(quantity, unit_price, vat_rate, mode)
+                    subtotal = calc_sub if subtotal is None else subtotal
+                    vat_amount = calc_vat if vat_amount is None else vat_amount
+                    total = calc_total if total is None else total
+                else:
+                    unit_price = money(subtotal / quantity, "precio") if quantity > 0 else subtotal
+
+                payment_method = cell(row, "payment_method", "forma_pago") or "Efectivo"
+                if payment_method not in PAYMENT_METHODS:
+                    payment_method = "Efectivo"
+                issue_date = normalize_issue_date(cell(row, "issue_date", "fecha"))
+                conn.execute(
+                    """
+                    INSERT INTO invoices(
+                        invoice_number, issue_date, client_id, concept, quantity,
+                        unit_price, vat_rate, subtotal, vat_amount, total,
+                        payment_method, status, docx_path, pdf_path, created_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+                    """,
+                    (
+                        number,
+                        issue_date,
+                        client["id"],
+                        concept,
+                        float(quantity),
+                        float(money(unit_price, "precio")),
+                        float(vat_rate),
+                        float(money(subtotal, "base")),
+                        float(money(vat_amount, "IVA")),
+                        float(money(total, "total")),
+                        payment_method,
+                        "emitida",
+                        now_iso(),
+                    ),
+                )
+                imported += 1
+            log_event(conn, f"Importación de facturas: {imported} importadas, {skipped} omitidas", "info", "import", None)
+            invoices = self._invoices(conn)
+        return {"imported": imported, "skipped": skipped, "unmatched": sorted(set(unmatched)), "invoices": invoices}
 
     def export_clients_csv(self) -> bytes:
         with db() as conn:

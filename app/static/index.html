@@ -303,9 +303,20 @@
             </section>
             <section class="panel">
               <h3>Importar clientes</h3>
-              <textarea id="importClientsCsv" rows="5" placeholder="Pega CSV con columnas: full_name;tax_id;address;postal_code;city;email;phone;notes"></textarea>
+              <p class="panel-note">Sube un archivo CSV o pega el texto. Columnas: full_name;tax_id;address;postal_code;city;email;phone;notes</p>
+              <input id="importClientsFile" type="file" accept=".csv,text/csv">
+              <textarea id="importClientsCsv" rows="5" placeholder="…o pega aquí el CSV de clientes"></textarea>
               <div class="actions">
                 <button type="button" id="importClientsButton">Importar clientes</button>
+              </div>
+            </section>
+            <section class="panel">
+              <h3>Importar facturas</h3>
+              <p class="panel-note">Sube un archivo CSV o pega el texto. Columnas: invoice_number;issue_date;full_name;tax_id;concept;quantity;unit_price;vat_rate;subtotal;vat_amount;total;payment_method. Los clientes deben existir (impórtalos primero).</p>
+              <input id="importInvoicesFile" type="file" accept=".csv,text/csv">
+              <textarea id="importInvoicesCsv" rows="5" placeholder="…o pega aquí el CSV de facturas"></textarea>
+              <div class="actions">
+                <button type="button" id="importInvoicesButton">Importar facturas</button>
               </div>
             </section>
             <section class="panel">
@@ -346,6 +357,6 @@
     </div>
 
     <div id="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=20260613-6"></script>
+    <script src="/static/app.js?v=20260613-7"></script>
   </body>
 </html>
