@@ -675,15 +675,15 @@ def highest_invoice_number_for_year(conn: sqlite3.Connection, year: int, series:
 
 
 def next_number_for_year(conn: sqlite3.Connection, year: int, settings: dict[str, str]) -> int:
-    """Siguiente número: el mayor entre el suelo elegido (contador/ajuste manual)
-    y (mayor existente + 1). Así respeta lo que pongas pero nunca genera un
-    número que ya exista (incluidas las facturas importadas)."""
-    series = invoice_series_for_year(settings, year)
-    floor = 1
+    """Siguiente número. Si hay un valor guardado (contador o ajuste manual) se
+    respeta tal cual —para poder forzarlo a mano—; si no, se deduce del mayor
+    número existente del año + 1 (contando también las facturas importadas)."""
     row = conn.execute("SELECT next_number FROM invoice_counters WHERE year = ?", (year,)).fetchone()
     if row:
-        floor = int(row["next_number"])
-    elif year == current_year():
+        return max(1, int(row["next_number"]))
+    series = invoice_series_for_year(settings, year)
+    floor = 1
+    if year == current_year():
         try:
             floor = max(1, int((settings.get("invoice_next_number") or "1").strip()))
         except ValueError:
@@ -1484,6 +1484,9 @@ class Handler(BaseHTTPRequestHandler):
             match = re.match(r"^/api/clients/(\d+)$", path)
             if match:
                 return self.send_json(self.update_client(int(match.group(1)), json_body(self)))
+            match = re.match(r"^/api/invoices/(\d+)$", path)
+            if match:
+                return self.send_json(self.update_invoice(int(match.group(1)), json_body(self)))
             match = re.match(r"^/api/trash/clients/(\d+)/restore$", path)
             if match:
                 return self.send_json(self.restore_client(int(match.group(1))))
@@ -1737,6 +1740,92 @@ class Handler(BaseHTTPRequestHandler):
         resolve_document_task("invoice", invoice_id=invoice_id)
         monthly_path = sync_monthly_docx(monthly_year, monthly_month)
         return {"invoice": created_invoice, "monthly_docx_path": str(monthly_path) if monthly_path else None}
+
+    def update_invoice(self, invoice_id: int, payload: dict) -> dict:
+        def picked(key, fallback):
+            value = payload.get(key)
+            return value if value not in (None, "") else fallback
+
+        with db() as conn:
+            row = conn.execute(
+                "SELECT * FROM invoices WHERE id = ? AND deleted_at IS NULL", (invoice_id,)
+            ).fetchone()
+            if not row:
+                raise ValueError("Factura no encontrada.")
+            existing = dict(row)
+
+            new_number = str(picked("invoice_number", existing["invoice_number"])).strip()
+            if not new_number:
+                raise ValueError("El número de factura es obligatorio.")
+            duplicate = conn.execute(
+                "SELECT id FROM invoices WHERE invoice_number = ? AND id != ?", (new_number, invoice_id)
+            ).fetchone()
+            if duplicate:
+                raise ValueError(f"Ya existe otra factura con el número {new_number}.")
+
+            client_id = int(picked("client_id", existing["client_id"]))
+            client = conn.execute(
+                "SELECT * FROM clients WHERE id = ? AND deleted_at IS NULL", (client_id,)
+            ).fetchone()
+            if not client:
+                raise ValueError("Cliente no encontrado.")
+
+            issue_date = normalize_issue_date(str(picked("issue_date", existing["issue_date"])))
+            concept = str(picked("concept", existing["concept"])).strip() or existing["concept"]
+            quantity = parse_decimal(picked("quantity", existing["quantity"]), "cantidad")
+            unit_price = parse_decimal(picked("unit_price", existing["unit_price"]), "precio base")
+            vat_rate = parse_decimal(picked("vat_rate", existing["vat_rate"]), "IVA %")
+            calc_sub, calc_vat, calc_total = calculate_invoice_totals(
+                quantity, unit_price, vat_rate,
+                payload.get("vat_calculation_mode") or DEFAULT_SETTINGS["vat_calculation_mode"],
+            )
+            subtotal = money(picked("subtotal", calc_sub), "base")
+            vat_amount = money(picked("vat_amount", calc_vat), "IVA")
+            total = money(picked("total", calc_total), "total")
+            payment_method = str(picked("payment_method", existing["payment_method"] or "Efectivo")).strip()
+            if payment_method not in PAYMENT_METHODS:
+                payment_method = "Efectivo"
+
+            conn.execute(
+                """
+                UPDATE invoices SET invoice_number = ?, issue_date = ?, client_id = ?, concept = ?,
+                    quantity = ?, unit_price = ?, vat_rate = ?, subtotal = ?, vat_amount = ?,
+                    total = ?, payment_method = ?
+                WHERE id = ?
+                """,
+                (
+                    new_number, issue_date, client_id, concept,
+                    float(quantity), float(money(unit_price, "precio base")), float(vat_rate),
+                    float(subtotal), float(vat_amount), float(total), payment_method, invoice_id,
+                ),
+            )
+            settings = get_settings(conn)
+            client_data = dict(client)
+            old_files = {"docx_path": existing.get("docx_path"), "pdf_path": existing.get("pdf_path")}
+            invoice_for_doc = {
+                "invoice_number": new_number, "issue_date": issue_date, "concept": concept,
+                "quantity": float(quantity), "unit_price": float(unit_price), "vat_rate": float(vat_rate),
+                "subtotal": float(subtotal), "vat_amount": float(vat_amount), "total": float(total),
+            }
+            log_event(conn, f"Factura {new_number} editada", "info", "invoice", invoice_id)
+
+        # Fuera de la transacción: borrar el Word/PDF antiguo y regenerar con los
+        # datos nuevos para que el documento refleje la edición.
+        self._delete_invoice_files(old_files)
+        docx_path, pdf_path = render_docx(invoice_for_doc, client_data, settings)
+        with db() as conn:
+            conn.execute(
+                "UPDATE invoices SET docx_path = ?, pdf_path = ? WHERE id = ?",
+                (docx_path, pdf_path, invoice_id),
+            )
+            updated = self._invoice_by_id(conn, invoice_id)
+
+        old_year, old_month = invoice_year_month(existing["issue_date"])
+        new_year, new_month = invoice_year_month(issue_date)
+        sync_monthly_docx(old_year, old_month)
+        if (old_year, old_month) != (new_year, new_month):
+            sync_monthly_docx(new_year, new_month)
+        return {"invoice": updated}
 
     def _discard_failed_invoice(self, invoice_id: int, invoice_number: str, issue_date: str) -> None:
         """Si el Word no se pudo generar, la factura no debe existir: se borra la
@@ -2180,6 +2269,19 @@ class Handler(BaseHTTPRequestHandler):
                     ),
                 )
                 imported += 1
+            # Adelantar el contador del año actual para que el siguiente número
+            # continúe la secuencia importada (sin bajar uno fijado más alto).
+            if imported:
+                year = current_year()
+                high = highest_invoice_number_for_year(conn, year, invoice_series_for_year(settings, year))
+                if high > 0:
+                    row = conn.execute("SELECT next_number FROM invoice_counters WHERE year = ?", (year,)).fetchone()
+                    current_counter = int(row["next_number"]) if row else 0
+                    conn.execute(
+                        "INSERT INTO invoice_counters(year, next_number) VALUES(?, ?) "
+                        "ON CONFLICT(year) DO UPDATE SET next_number = excluded.next_number",
+                        (year, max(current_counter, high + 1)),
+                    )
             log_event(conn, f"Importación de facturas: {imported} importadas, {skipped} omitidas", "info", "import", None)
             invoices = self._invoices(conn)
         return {"imported": imported, "skipped": skipped, "unmatched": sorted(set(unmatched)), "invoices": invoices}

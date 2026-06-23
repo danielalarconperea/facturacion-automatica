@@ -353,7 +353,61 @@
       </div>
     </div>
 
+    <div id="invoiceEditModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="editInvoiceTitle">
+      <div class="modal-panel">
+        <div class="modal-header">
+          <h2 id="editInvoiceTitle">Editar factura</h2>
+          <button type="button" class="ghost" id="closeInvoiceEdit">Cerrar</button>
+        </div>
+        <form id="invoiceEditForm" class="panel">
+          <input type="hidden" id="editInvoiceId">
+          <div class="settings-grid">
+            <label>Nº factura
+              <input id="editInvoiceNumber">
+            </label>
+            <label>Fecha
+              <input id="editInvoiceDate" type="date">
+            </label>
+            <label>Cliente
+              <select id="editInvoiceClient"></select>
+            </label>
+            <label>Forma de pago
+              <select id="editPaymentMethod">
+                <option value="Efectivo">Efectivo</option>
+                <option value="Transferencia">Transferencia</option>
+                <option value="Bizum">Bizum</option>
+              </select>
+            </label>
+            <label class="full-row">Concepto
+              <input id="editConcept">
+            </label>
+            <label>Cantidad
+              <input id="editQuantity" inputmode="decimal">
+            </label>
+            <label>Precio base
+              <input id="editUnitPrice" inputmode="decimal">
+            </label>
+            <label>IVA %
+              <input id="editVatRate" inputmode="decimal">
+            </label>
+            <label>Base
+              <input id="editSubtotal" inputmode="decimal">
+            </label>
+            <label>IVA importe
+              <input id="editVatAmount" inputmode="decimal">
+            </label>
+            <label>Total
+              <input id="editTotal" inputmode="decimal">
+            </label>
+          </div>
+          <div class="actions full-row">
+            <button type="submit">Guardar cambios</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
     <div id="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=20260613-8"></script>
+    <script src="/static/app.js?v=20260613-9"></script>
   </body>
 </html>

@@ -922,6 +922,7 @@ function renderInvoices() {
               <span class="action-menu">
                 <button class="edit-button menu-trigger" type="button" aria-haspopup="true" aria-expanded="false" aria-label="Más acciones">⋯</button>
                 <span class="menu-list hidden" role="menu">
+                  <button type="button" role="menuitem" data-edit-invoice="${invoice.id}">${icon("edit")} Editar</button>
                   <button type="button" role="menuitem" data-preview-invoice="${invoice.id}">${icon("eye")} Vista previa</button>
                   ${invoice.pdf_url ? `<a role="menuitem" href="${invoice.pdf_url}">${icon("word")} PDF</a>` : ""}
                   <button type="button" role="menuitem" class="menu-danger" data-delete-invoice="${invoice.id}">${icon("trash")} Eliminar</button>
@@ -962,6 +963,48 @@ function renderInvoices() {
       }
     });
   });
+
+  document.querySelectorAll("[data-edit-invoice]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const invoice = state.invoices.find((item) => item.id === Number(button.dataset.editInvoice));
+      if (invoice) {
+        openInvoiceEdit(invoice);
+      }
+    });
+  });
+}
+
+function openInvoiceEdit(invoice) {
+  $("editInvoiceId").value = invoice.id;
+  $("editInvoiceNumber").value = displayNumber(invoice);
+  $("editInvoiceDate").value = invoice.issue_date || today();
+  $("editInvoiceClient").innerHTML = state.clients
+    .map((client) => `<option value="${client.id}">${escapeHtml(client.full_name)}</option>`)
+    .join("");
+  $("editInvoiceClient").value = String(invoice.client_id);
+  $("editPaymentMethod").value = invoice.payment_method || "Efectivo";
+  $("editConcept").value = invoice.concept || "";
+  $("editQuantity").value = invoice.quantity ?? 1;
+  $("editUnitPrice").value = amountText(Number(invoice.unit_price || 0));
+  $("editVatRate").value = invoice.vat_rate ?? 21;
+  $("editSubtotal").value = amountText(Number(invoice.subtotal || 0));
+  $("editVatAmount").value = amountText(Number(invoice.vat_amount || 0));
+  $("editTotal").value = amountText(Number(invoice.total || 0));
+  $("invoiceEditModal").classList.remove("hidden");
+}
+
+function closeInvoiceEdit() {
+  $("invoiceEditModal").classList.add("hidden");
+}
+
+function recalcEditTotals() {
+  const quantity = parseAmount($("editQuantity").value || 0);
+  const unitPrice = parseAmount($("editUnitPrice").value || 0);
+  const vatRate = parseAmount($("editVatRate").value || 0);
+  const { subtotal, vat, total } = calculateInvoiceTotals(quantity, unitPrice, vatRate, vatCalculationMode());
+  $("editSubtotal").value = amountText(subtotal);
+  $("editVatAmount").value = amountText(vat);
+  $("editTotal").value = amountText(total);
 }
 
 function showInvoicePreview(invoice) {
@@ -1279,6 +1322,43 @@ $("closePreview").addEventListener("click", closeInvoicePreview);
 $("invoicePreviewModal").addEventListener("click", (event) => {
   if (event.target.id === "invoicePreviewModal") {
     closeInvoicePreview();
+  }
+});
+
+$("closeInvoiceEdit").addEventListener("click", closeInvoiceEdit);
+$("invoiceEditModal").addEventListener("click", (event) => {
+  if (event.target.id === "invoiceEditModal") {
+    closeInvoiceEdit();
+  }
+});
+["editQuantity", "editUnitPrice", "editVatRate"].forEach((id) => {
+  $(id).addEventListener("input", recalcEditTotals);
+});
+$("invoiceEditForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const id = $("editInvoiceId").value;
+  try {
+    const result = await api(`/api/invoices/${id}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        invoice_number: $("editInvoiceNumber").value,
+        issue_date: $("editInvoiceDate").value,
+        client_id: $("editInvoiceClient").value,
+        payment_method: $("editPaymentMethod").value,
+        concept: $("editConcept").value,
+        quantity: cleanAmountValue("editQuantity"),
+        unit_price: cleanAmountValue("editUnitPrice"),
+        vat_rate: cleanAmountValue("editVatRate"),
+        subtotal: cleanAmountValue("editSubtotal"),
+        vat_amount: cleanAmountValue("editVatAmount"),
+        total: cleanAmountValue("editTotal"),
+      }),
+    });
+    closeInvoiceEdit();
+    await refreshData();
+    toast(`Factura ${displayNumber(result.invoice)} actualizada y Word regenerado.`);
+  } catch (error) {
+    toast(error.message);
   }
 });
 
