@@ -657,36 +657,38 @@ def invoice_number_value(invoice_number: str, series: str) -> int | None:
     return int(value)
 
 
-def inferred_next_invoice_number(conn: sqlite3.Connection, year: int, series: str, settings: dict[str, str]) -> int:
-    fallback = 1
-    if year == current_year():
-        try:
-            fallback = max(1, int((settings.get("invoice_next_number") or "1").strip()))
-        except ValueError:
-            fallback = 1
+def highest_invoice_number_for_year(conn: sqlite3.Connection, year: int, series: str) -> int:
+    """Mayor número de factura usado ese año, contando tanto el formato con serie
+    ('2026-5' -> 5) como números sueltos importados ('110' -> 110)."""
     rows = conn.execute(
-        "SELECT invoice_number FROM invoices WHERE strftime('%Y', issue_date) = ?",
+        "SELECT invoice_number FROM invoices WHERE strftime('%Y', issue_date) = ? AND deleted_at IS NULL",
         (str(year),),
     ).fetchall()
-    existing_numbers = [
-        number
-        for row in rows
-        if (number := invoice_number_value(row["invoice_number"], series)) is not None
-    ]
-    if not existing_numbers and series:
-        existing_numbers = [
-            number
-            for row in rows
-            if (number := invoice_number_value(row["invoice_number"], "")) is not None
-        ]
-    return max(fallback, max(existing_numbers, default=0) + 1)
+    numbers = []
+    for row in rows:
+        value = invoice_number_value(row["invoice_number"], series)
+        if value is None:
+            value = invoice_number_value(row["invoice_number"], "")
+        if value is not None:
+            numbers.append(value)
+    return max(numbers, default=0)
 
 
 def next_number_for_year(conn: sqlite3.Connection, year: int, settings: dict[str, str]) -> int:
+    """Siguiente número: el mayor entre el suelo elegido (contador/ajuste manual)
+    y (mayor existente + 1). Así respeta lo que pongas pero nunca genera un
+    número que ya exista (incluidas las facturas importadas)."""
+    series = invoice_series_for_year(settings, year)
+    floor = 1
     row = conn.execute("SELECT next_number FROM invoice_counters WHERE year = ?", (year,)).fetchone()
     if row:
-        return int(row["next_number"])
-    return inferred_next_invoice_number(conn, year, invoice_series_for_year(settings, year), settings)
+        floor = int(row["next_number"])
+    elif year == current_year():
+        try:
+            floor = max(1, int((settings.get("invoice_next_number") or "1").strip()))
+        except ValueError:
+            floor = 1
+    return max(floor, highest_invoice_number_for_year(conn, year, series) + 1)
 
 
 def public_settings(conn: sqlite3.Connection) -> dict[str, str]:
@@ -1020,6 +1022,10 @@ def improve_invoice_table_layout(xml: str) -> str:
     xml = replace_xml_row(xml, "<w:t>SUMA</w:t>", center_row_text)
     xml = replace_xml_row(xml, "<w:t>21% I.V.A:</w:t>", center_row_text)
     xml = replace_xml_row(xml, "<w:t>TOTAL</w:t>", center_row_text)
+    # La tabla de totales está flotando en una posición absoluta (w:tblpX) que la
+    # deja pegada a la derecha; la centramos entre los márgenes de la página.
+    xml = re.sub(r'w:tblpX="\d+"', 'w:tblpXSpec="center"', xml)
+    xml = xml.replace('w:horzAnchor="page"', 'w:horzAnchor="margin"')
     return xml
 
 
