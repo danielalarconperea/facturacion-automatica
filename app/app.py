@@ -1084,16 +1084,12 @@ def page_break_xml() -> str:
 
 
 def invoice_number_sort_key(invoice_number: str) -> tuple:
-    parts = re.split(r"(\d+)", invoice_number or "")
-    sortable_parts = []
-    for part in parts:
-        if not part:
-            continue
-        if part.isdigit():
-            sortable_parts.append((0, int(part)))
-        else:
-            sortable_parts.append((1, normalize_text(part)))
-    return tuple(sortable_parts)
+    """Ordena por el número secuencial (los últimos dígitos), para que el formato
+    con año ('2026-16') y el suelto ('16') ordenen igual: por el número que se ve
+    en la factura. Así el Word mensual no se desordena al mezclar formatos."""
+    numbers = re.findall(r"\d+", invoice_number or "")
+    sequential = int(numbers[-1]) if numbers else 0
+    return (sequential, invoice_number or "")
 
 
 def open_local_folder(path: Path) -> Path:
@@ -1753,8 +1749,16 @@ class Handler(BaseHTTPRequestHandler):
             if not row:
                 raise ValueError("Factura no encontrada.")
             existing = dict(row)
+            settings = get_settings(conn)
 
-            new_number = str(picked("invoice_number", existing["invoice_number"])).strip()
+            # El modal muestra el número SIN el prefijo de año ("16" por "2026-16").
+            # Si no se cambia, conservar el número almacenado original para no
+            # alterar su formato (y con ello el orden del Word mensual).
+            submitted_number = str(picked("invoice_number", existing["invoice_number"])).strip()
+            if submitted_number == display_invoice_number(existing, settings):
+                new_number = existing["invoice_number"]
+            else:
+                new_number = submitted_number
             if not new_number:
                 raise ValueError("El número de factura es obligatorio.")
             duplicate = conn.execute(
@@ -1799,7 +1803,6 @@ class Handler(BaseHTTPRequestHandler):
                     float(subtotal), float(vat_amount), float(total), payment_method, invoice_id,
                 ),
             )
-            settings = get_settings(conn)
             client_data = dict(client)
             old_files = {"docx_path": existing.get("docx_path"), "pdf_path": existing.get("pdf_path")}
             invoice_for_doc = {
