@@ -527,27 +527,96 @@ main {
   pointer-events: none;
 }
 
-.top-client {
-  display: grid;
-  gap: 8px;
+.podium {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 10px;
   border-top: 1px solid var(--line-soft);
-  padding-top: 16px;
+  padding-top: 18px;
+  margin-top: 2px;
 }
 
-.top-client strong {
-  font-size: 22px;
+.podium-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  flex: 1 1 0;
+  max-width: 130px;
+  text-align: center;
+}
+
+.podium-medal {
+  font-size: 23px;
+  line-height: 1;
+}
+
+.podium-name {
+  font-size: 12.5px;
+  font-weight: 760;
+  color: var(--text);
   line-height: 1.2;
 }
 
-.top-client span {
-  color: var(--accent);
-  font-size: 29px;
-  font-weight: 820;
+.podium-revenue {
+  font-size: 15px;
+  font-weight: 840;
+  color: var(--accent-strong);
 }
 
-.top-client small {
+.podium-count {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.podium-bar {
+  width: 100%;
+  margin-top: 6px;
+  border-radius: 9px 9px 0 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 7px;
+  color: #fff;
+  font-weight: 820;
+  font-size: 14px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+}
+
+.place-1 .podium-bar {
+  height: 76px;
+  background: linear-gradient(180deg, #e0bd54, #c8a95c);
+}
+
+.place-2 .podium-bar {
+  height: 56px;
+  background: linear-gradient(180deg, #c6cad0, #aab0b8);
+}
+
+.place-3 .podium-bar {
+  height: 40px;
+  background: linear-gradient(180deg, #d2a075, #c0805a);
+}
+
+.podium-empty {
   color: var(--muted);
   font-size: 13px;
+}
+
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+th.sortable:hover {
+  color: var(--accent-strong);
+}
+
+.sort-arrow {
+  font-size: 10px;
+  color: var(--accent);
 }
 
 .monthly-panel {

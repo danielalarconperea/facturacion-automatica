@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Facturación</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260613-1">
+    <link rel="stylesheet" href="/static/styles.css?v=20260613-2">
   </head>
   <body>
     <header class="app-header">
@@ -54,12 +54,8 @@
             <canvas id="monthlyTrendChart" height="260"></canvas>
           </div>
           <div class="panel top-client-panel">
-            <h3>Cliente con más facturación</h3>
-            <div class="top-client">
-              <strong id="topClientName">Sin datos</strong>
-              <span id="topClientRevenue">0 €</span>
-              <small id="topClientInvoices">0 facturas</small>
-            </div>
+            <h3>Podio de clientes</h3>
+            <div id="topClientPodium" class="podium"></div>
           </div>
           <div class="panel table-panel monthly-panel">
             <table>
@@ -204,10 +200,10 @@
             <table>
               <thead>
                 <tr>
-                  <th>Nº</th>
-                  <th>Cliente</th>
-                  <th>Fecha</th>
-                  <th>Total</th>
+                  <th class="sortable" data-sort="number">Nº</th>
+                  <th class="sortable" data-sort="client">Cliente</th>
+                  <th class="sortable" data-sort="date">Fecha</th>
+                  <th class="sortable" data-sort="total">Total</th>
                   <th>Documento</th>
                 </tr>
               </thead>
@@ -357,6 +353,6 @@
     </div>
 
     <div id="toast" role="status" aria-live="polite"></div>
-    <script src="/static/app.js?v=20260613-7"></script>
+    <script src="/static/app.js?v=20260613-8"></script>
   </body>
 </html>

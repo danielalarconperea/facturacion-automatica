@@ -428,11 +428,33 @@ function renderDashboard() {
 }
 
 function renderTopClient(topClients, invoices) {
-  const [name, revenue] = topClients[0] || ["Sin datos", 0];
-  const invoiceCount = invoices.filter((invoice) => (invoice.client_name || "Sin cliente") === name).length;
-  $("topClientName").textContent = name;
-  $("topClientRevenue").textContent = euro(revenue);
-  $("topClientInvoices").textContent = `${invoiceCount} factura${invoiceCount === 1 ? "" : "s"}`;
+  const box = $("topClientPodium");
+  if (!box) return;
+  const medals = ["🥇", "🥈", "🥉"];
+  const top3 = topClients.slice(0, 3).map(([name, revenue]) => ({
+    name,
+    revenue,
+    count: invoices.filter((invoice) => (invoice.client_name || "Sin cliente") === name).length,
+  }));
+  if (!top3.length) {
+    box.innerHTML = `<p class="podium-empty">Sin datos todavía.</p>`;
+    return;
+  }
+  const visualOrder = [1, 0, 2]; // 2º, 1º, 3º para forma de podio
+  box.innerHTML = visualOrder
+    .filter((i) => top3[i])
+    .map((i) => {
+      const c = top3[i];
+      return `
+        <div class="podium-step place-${i + 1}">
+          <span class="podium-medal">${medals[i]}</span>
+          <span class="podium-name">${escapeHtml(c.name)}</span>
+          <span class="podium-revenue">${euro(c.revenue)}</span>
+          <small class="podium-count">${c.count} factura${c.count === 1 ? "" : "s"}</small>
+          <span class="podium-bar">${i + 1}º</span>
+        </div>`;
+    })
+    .join("");
 }
 
 function drawSessionsPriceChart(canvasId, labels, sessionValues, averagePriceValues) {
@@ -714,11 +736,11 @@ function renderClientProfile() {
     <div class="profile-grid">
       <div><span>Total facturado</span><strong>${euro(total)}</strong></div>
       <div><span>Facturas</span><strong>${invoices.length}</strong></div>
-      <div><span>Última factura</span><strong>${lastInvoice ? escapeHtml(lastInvoice.invoice_number) : "-"}</strong></div>
+      <div><span>Última factura</span><strong>${lastInvoice ? escapeHtml(displayNumber(lastInvoice)) : "-"}</strong></div>
       <div><span>Contacto</span><strong>${escapeHtml(client.email || client.phone || "-")}</strong></div>
     </div>
     <div class="compact-list">
-      ${invoices.slice(0, 8).map((invoice) => `<div class="list-item"><strong>Factura ${escapeHtml(invoice.invoice_number)} · ${euro(invoice.total)}</strong><span>${formatDisplayDate(invoice.issue_date)} · ${escapeHtml(invoice.concept || "")}</span></div>`).join("") || `<div class="list-item"><strong>Sin facturas</strong><span>Todavía no hay facturas para este cliente.</span></div>`}
+      ${invoices.slice(0, 8).map((invoice) => `<div class="list-item"><strong>Factura ${escapeHtml(displayNumber(invoice))} · ${euro(invoice.total)}</strong><span>${formatDisplayDate(invoice.issue_date)} · ${escapeHtml(invoice.concept || "")}</span></div>`).join("") || `<div class="list-item"><strong>Sin facturas</strong><span>Todavía no hay facturas para este cliente.</span></div>`}
     </div>
   `;
   $("closeClientProfile").addEventListener("click", () => {
@@ -825,6 +847,39 @@ function startInvoiceForClient(clientId) {
   toast("Cliente seleccionado para facturar.");
 }
 
+function invoiceSeriesForYear(year) {
+  const raw = (state.settings.invoice_series || "").trim() || "{year}-";
+  if (raw.includes("{year}")) return raw.replace("{year}", String(year));
+  const m = raw.match(/^\d{4}(.*)$/);
+  return m ? `${year}${m[1]}` : raw;
+}
+
+function displayNumber(invoice) {
+  const raw = String((invoice && invoice.invoice_number) || "").trim();
+  const year = Number(String((invoice && invoice.issue_date) || "").slice(0, 4)) || new Date().getFullYear();
+  const series = invoiceSeriesForYear(year);
+  return series && raw.startsWith(series) ? raw.slice(series.length) : raw;
+}
+
+function invoiceSortValue(invoice, key) {
+  if (key === "client") return (invoice.client_name || "").toLowerCase();
+  if (key === "date") return invoice.issue_date || "";
+  if (key === "total") return Number(invoice.total || 0);
+  const year = Number(String(invoice.issue_date || "").slice(0, 4)) || 0;
+  const num = parseInt(String(displayNumber(invoice)).replace(/\D+/g, ""), 10) || 0;
+  return year * 1000000 + num;
+}
+
+const INVOICE_SORT_LABELS = { number: "Nº", client: "Cliente", date: "Fecha", total: "Total" };
+function updateInvoiceSortHeaders() {
+  document.querySelectorAll("#invoices th.sortable").forEach((th) => {
+    const key = th.dataset.sort;
+    const active = state.invoiceSort && state.invoiceSort.key === key;
+    const arrow = active ? ` <span class="sort-arrow">${state.invoiceSort.dir === "asc" ? "▲" : "▼"}</span>` : "";
+    th.innerHTML = (INVOICE_SORT_LABELS[key] || "") + arrow;
+  });
+}
+
 function renderInvoices() {
   const query = normalizeText($("invoiceSearch").value);
   const dateFrom = $("invoiceDateFrom").value;
@@ -833,8 +888,9 @@ function renderInvoices() {
   const maxTotal = parseAmount($("invoiceMaxTotal").value);
   const hasMin = $("invoiceMinTotal").value.trim() !== "";
   const hasMax = $("invoiceMaxTotal").value.trim() !== "";
+  if (!state.invoiceSort) state.invoiceSort = { key: "number", dir: "desc" };
   const rows = state.invoices.filter((invoice) => {
-    const haystack = normalizeText(`${invoice.invoice_number} ${invoice.client_name} ${invoice.concept}`);
+    const haystack = normalizeText(`${displayNumber(invoice)} ${invoice.invoice_number} ${invoice.client_name} ${invoice.concept}`);
     if (query && !haystack.includes(query)) return false;
     if (dateFrom && invoice.issue_date < dateFrom) return false;
     if (dateTo && invoice.issue_date > dateTo) return false;
@@ -843,11 +899,20 @@ function renderInvoices() {
     return true;
   });
 
+  const sort = state.invoiceSort;
+  rows.sort((a, b) => {
+    const va = invoiceSortValue(a, sort.key);
+    const vb = invoiceSortValue(b, sort.key);
+    const cmp = typeof va === "number" && typeof vb === "number" ? va - vb : String(va).localeCompare(String(vb), "es");
+    return sort.dir === "asc" ? cmp : -cmp;
+  });
+  updateInvoiceSortHeaders();
+
   $("invoicesTable").innerHTML = rows
     .map(
       (invoice) => `
         <tr>
-          <td><strong>${escapeHtml(invoice.invoice_number)}</strong></td>
+          <td><strong>${escapeHtml(displayNumber(invoice))}</strong></td>
           <td>${escapeHtml(invoice.client_name)}</td>
           <td>${escapeHtml(invoice.issue_date)}</td>
           <td>${euro(invoice.total)}</td>
@@ -902,7 +967,7 @@ function renderInvoices() {
 function showInvoicePreview(invoice) {
   const issuer = state.settings;
   const clientCity = [invoice.client_postal_code, invoice.client_city].filter(Boolean).join(", ");
-  $("previewTitle").textContent = `Vista previa factura ${invoice.invoice_number}`;
+  $("previewTitle").textContent = `Vista previa factura ${displayNumber(invoice)}`;
   $("invoicePreviewBody").innerHTML = `
     <div class="preview-sheet">
       <div class="preview-parties">
@@ -920,7 +985,7 @@ function showInvoicePreview(invoice) {
         </div>
       </div>
       <div class="preview-row four">
-        <span>Nº FACTURA</span><strong>${escapeHtml(invoice.invoice_number)}</strong>
+        <span>Nº FACTURA</span><strong>${escapeHtml(displayNumber(invoice))}</strong>
         <span>FECHA</span><strong>${formatDisplayDate(invoice.issue_date)}</strong>
       </div>
       <div class="preview-row concept">
@@ -1027,12 +1092,13 @@ async function deleteClient(client) {
 }
 
 async function deleteInvoice(invoice) {
+  const shown = displayNumber(invoice);
   const first = window.confirm(
-    `¿Eliminar la factura ${invoice.invoice_number} de ${invoice.client_name}?\n\nIrá a la papelera y podrás restaurarla desde Ajustes → Papelera.`
+    `¿Eliminar la factura ${shown} de ${invoice.client_name}?\n\nIrá a la papelera y podrás restaurarla desde Ajustes → Papelera.`
   );
   if (!first) return;
-  const second = window.prompt(`Para confirmar, escribe el número de factura: ${invoice.invoice_number}`);
-  if (second !== invoice.invoice_number) {
+  const second = window.prompt(`Para confirmar, escribe el número de factura: ${shown}`);
+  if (second === null || second.trim() !== shown) {
     toast("Eliminación cancelada.");
     return;
   }
@@ -1042,7 +1108,7 @@ async function deleteInvoice(invoice) {
       body: JSON.stringify({ confirm: "ELIMINAR", invoice_number: invoice.invoice_number }),
     });
     await refreshData();
-    toast(`Factura ${invoice.invoice_number} enviada a papelera.`);
+    toast(`Factura ${shown} enviada a papelera.`);
   } catch (error) {
     toast(`No se pudo eliminar: ${error.message}`);
   }
@@ -1345,6 +1411,19 @@ $("importSettingsButton").addEventListener("click", async () => {
   $(id).addEventListener("input", renderInvoices);
 });
 
+document.querySelectorAll("#invoices th.sortable").forEach((th) => {
+  th.addEventListener("click", () => {
+    const key = th.dataset.sort;
+    if (!state.invoiceSort) state.invoiceSort = { key: "number", dir: "desc" };
+    if (state.invoiceSort.key === key) {
+      state.invoiceSort.dir = state.invoiceSort.dir === "asc" ? "desc" : "asc";
+    } else {
+      state.invoiceSort = { key, dir: key === "client" ? "asc" : "desc" };
+    }
+    renderInvoices();
+  });
+});
+
 $("clearInvoiceFilters").addEventListener("click", () => {
   ["invoiceSearch", "invoiceDateFrom", "invoiceDateTo", "invoiceMinTotal", "invoiceMaxTotal"].forEach((id) => {
     $(id).value = "";
@@ -1413,7 +1492,7 @@ $("invoiceForm").addEventListener("submit", async (event) => {
     });
     await refreshData();
     const pendingMessage = state.documentTasks.length ? " Hay cambios pendientes por un Word abierto." : " Word mensual actualizado.";
-    toast(`Factura ${result.invoice.invoice_number} generada.${pendingMessage}`);
+    toast(`Factura ${displayNumber(result.invoice)} generada.${pendingMessage}`);
   } catch (error) {
     toast(error.message);
   }
