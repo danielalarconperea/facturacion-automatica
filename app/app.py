@@ -1132,6 +1132,21 @@ def log_docx_warning(invoice_number: str, missing: list[str]) -> None:
         pass
 
 
+def display_invoice_number(invoice: dict, settings: dict) -> str:
+    """Número que se imprime en la factura: solo la parte secuencial, sin el
+    prefijo de serie/año (p. ej. '2026-3' -> '3')."""
+    raw = str(invoice.get("invoice_number") or "").strip()
+    try:
+        year = int(str(invoice.get("issue_date") or "")[:4])
+    except ValueError:
+        year = current_year()
+    series = invoice_series_for_year(settings, year)
+    if series and raw.startswith(series):
+        return raw[len(series):]
+    match = re.match(r"^\d{4}\s*[-/. ]\s*(.+)$", raw)
+    return match.group(1) if match else raw
+
+
 def render_docx(
     invoice: dict,
     client: dict,
@@ -1176,7 +1191,7 @@ def render_docx(
         "DNI: DNI/NIF CLIENTE": f"DNI: {(client.get('tax_id') or '').strip()}",
         "DIRECCION DEL CLIENTE": (client.get("address") or "").upper(),
         "CP, CIUDAD CLIENTE": client_postal_city,
-        "      0000": invoice["invoice_number"],
+        "      0000": display_invoice_number(invoice, settings),
         "   DD-MM-AAAA": format_date_for_invoice(invoice["issue_date"]),
         "  SERVICIO": invoice["concept"].upper(),
         "  0,00": subtotal_text,
