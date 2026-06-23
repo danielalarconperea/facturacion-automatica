@@ -2089,7 +2089,8 @@ class Handler(BaseHTTPRequestHandler):
             for row in rows:
                 number = cell(row, "invoice_number", "n_factura", "numero", "número")
                 name = cell(row, "full_name", "cliente", "client_name", "nombre")
-                if not number or not name:
+                if not number or not name or not re.search(r"\d", number):
+                    # Sin número, sin cliente, o número sin dígitos (basura tipo "FECHA").
                     skipped += 1
                     continue
                 if conn.execute("SELECT id FROM invoices WHERE invoice_number = ?", (number,)).fetchone():
@@ -2110,14 +2111,21 @@ class Handler(BaseHTTPRequestHandler):
                     unmatched.append(name)
                     continue
 
-                concept = cell(row, "concept", "concepto") or "1 SERVICIO"
+                concept_raw = cell(row, "concept", "concepto")
                 try:
                     quantity = parse_decimal(cell(row, "quantity", "cantidad"), "cantidad")
                     if quantity <= 0:
                         raise ValueError
                 except ValueError:
-                    match = re.match(r"^\s*(\d+)", concept)
+                    match = re.match(r"^\s*(\d+)", concept_raw)
                     quantity = Decimal(match.group(1)) if match else Decimal("1")
+                # Si el concepto viene vacío o genérico ("1 SERVICIO"), usar el
+                # concepto por defecto configurado ajustado a la cantidad.
+                default_concept = settings.get("default_concept", "")
+                if not concept_raw or is_auto_concept(concept_raw, default_concept):
+                    concept = concept_for_quantity(quantity, default_concept)
+                else:
+                    concept = concept_raw
                 vat_rate = parse_decimal(cell(row, "vat_rate", "iva") or default_vat or "21", "IVA %")
                 subtotal = amount(row, "subtotal", "importe", "suma", "base")
                 vat_amount = amount(row, "vat_amount", "iva_importe")
